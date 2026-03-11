@@ -199,10 +199,7 @@ export class Indexer {
         let projectSourceFiles: SourceFile[] = [];
         withStatus('Index workspace and track project files', () => {
             this.program.indexWorkspace((filepath: string) => {
-                // Do not index files outside the project because SCIP doesn't support it.
-                //
-                // Both filepath and this.scipConfig.projectRoot are NOT normalized.
-                if (filepath.indexOf(this.scipConfig.projectRoot) != 0) {
+                if (filepath.indexOf(this.getProjectRoot()) != 0) {
                     return;
                 }
 
