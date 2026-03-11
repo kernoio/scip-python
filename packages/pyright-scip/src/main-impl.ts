@@ -6,10 +6,53 @@ import { diffSnapshot, formatSnapshot, writeSnapshot } from './lib';
 import { Input } from './lsif-typescript/Input';
 import { join } from 'path';
 import { IndexOptions, SnapshotOptions, mainCommand } from './MainCommand';
-import { detectAction } from './detectCommand';
+import { detect, detectAction, ProjectNode } from './detectCommand';
 import { sendStatus, setQuiet, setShowProgressRateLimit } from './status';
 import { Indexer } from './indexer';
 import { exit } from 'process';
+
+function findProjectNodeByName(nodes: ProjectNode[], name: string): ProjectNode | undefined {
+    const normalized = name.toLowerCase().replace(/[_.-]+/g, '-');
+    for (const node of nodes) {
+        if (node.name === normalized) {
+            return node;
+        }
+        if (node.subProjects) {
+            const found = findProjectNodeByName(node.subProjects, name);
+            if (found) {
+                return found;
+            }
+        }
+    }
+    return undefined;
+}
+
+function collectAllProjectPaths(nodes: ProjectNode[]): string[] {
+    const paths: string[] = [];
+    for (const node of nodes) {
+        paths.push(node.path);
+        if (node.subProjects) {
+            paths.push(...collectAllProjectPaths(node.subProjects));
+        }
+    }
+    return paths;
+}
+
+function applyFilterToOptions(options: IndexOptions, repoRoot: string): void {
+    const topology = detect(repoRoot);
+    const target = findProjectNodeByName(topology.projects, options.filter!);
+    if (!target) {
+        throw new Error(`Package "${options.filter}" not found in workspace topology at ${repoRoot}`);
+    }
+
+    const allPaths = collectAllProjectPaths(topology.projects);
+    const siblingAbsPaths = allPaths
+        .filter((p) => p !== target.path)
+        .map((p) => path.resolve(repoRoot, p));
+
+    options.targetOnly = path.resolve(repoRoot, target.path);
+    options.extraPaths = siblingAbsPaths;
+}
 
 export function indexAction(options: IndexOptions): void {
     setQuiet(options.quiet);
@@ -20,15 +63,13 @@ export function indexAction(options: IndexOptions): void {
     const projectRoot = options.cwd;
     const environment = options.environment;
 
+    if (options.filter) {
+        applyFilterToOptions(options, path.resolve(projectRoot));
+    }
+
     const originalWorkdir = process.cwd();
     process.chdir(projectRoot);
 
-    // In the relative path case, we use projectRoot rather than
-    // originalWorkdir because:
-    // 1. To preserve back-compat in case anyone is relying on projectRoot
-    // 2. The actual CLI flag for specifying the project root is --cwd,
-    //    which may lead to the expectation that output is considered
-    //    relative to the project root.
     const outputFile = path.isAbsolute(options.output) ? options.output : path.join(projectRoot, options.output);
     const output = fs.openSync(outputFile, 'w');
 

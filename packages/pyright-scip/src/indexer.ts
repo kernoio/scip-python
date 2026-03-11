@@ -84,6 +84,11 @@ export class Indexer {
         let config = new ScipPyrightConfig(scipConfig, fs);
         this.pyrightConfig = config.getConfigOptions();
 
+        if (scipConfig.extraPaths && scipConfig.extraPaths.length > 0) {
+            const existing = this.pyrightConfig.defaultExtraPaths ?? [];
+            this.pyrightConfig.defaultExtraPaths = [...existing, ...scipConfig.extraPaths];
+        }
+
         if (!scipConfig.projectName || !scipConfig.projectVersion) {
             const { name, version } = Indexer.inferProjectInfo(
                 scipConfig.infer.projectVersionFromCommit,

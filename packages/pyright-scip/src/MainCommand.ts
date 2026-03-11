@@ -10,9 +10,10 @@ export interface IndexOptions {
     output: string;
     cwd: string;
     targetOnly?: string;
+    filter?: string;
+    extraPaths?: string[];
     infer?: { projectVersionFromCommit: boolean };
 
-    // Progress reporting configuration
     quiet: boolean;
     showProgressRateLimit: number | undefined;
 }
@@ -74,6 +75,7 @@ export function mainCommand(
             'Path to the output file. If this path is relative, it is interpreted relative to the value for --cwd.',
             DEFAULT_OUTPUT_FILE
         )
+        .option('--filter <package-name>', 'index a single named package from a monorepo workspace')
         .option('--quiet', 'run without logging and status information', false)
         .option(
             '--show-progress-rate-limit <limit>',

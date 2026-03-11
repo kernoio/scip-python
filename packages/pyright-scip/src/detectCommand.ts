@@ -9,7 +9,7 @@ interface ProjectConfig {
     configFile: string;
 }
 
-interface ProjectNode {
+export interface ProjectNode {
     name: string;
     path: string;
     language: string;
@@ -19,7 +19,7 @@ interface ProjectNode {
     subProjects?: ProjectNode[];
 }
 
-interface DetectOutput {
+export interface DetectOutput {
     projects: ProjectNode[];
 }
 
@@ -512,8 +512,8 @@ function postProcessUvWorkspaceNodes(workspaceNode: ProjectNode, allParsedByDir:
     }
 }
 
-export function detectAction(options: DetectOptions): void {
-    const repoRoot = path.resolve(options.cwd);
+export function detect(cwd: string): DetectOutput {
+    const repoRoot = path.resolve(cwd);
 
     const allMarkers = findProjectMarkers(repoRoot);
 
@@ -535,9 +535,7 @@ export function detectAction(options: DetectOptions): void {
     const allParsed = [...parsedPyprojects, ...parsedSetupFiles];
 
     if (allParsed.length === 0) {
-        const output: DetectOutput = { projects: [] };
-        process.stdout.write(JSON.stringify(output, null, 2) + '\n');
-        return;
+        return { projects: [] };
     }
 
     const allParsedByDir = new Map<string, ParsedProject>();
@@ -622,6 +620,10 @@ export function detectAction(options: DetectOptions): void {
         }
     }
 
-    const output: DetectOutput = { projects: topLevelNodes };
+    return { projects: topLevelNodes };
+}
+
+export function detectAction(options: DetectOptions): void {
+    const output = detect(options.cwd);
     process.stdout.write(JSON.stringify(output, null, 2) + '\n');
 }
