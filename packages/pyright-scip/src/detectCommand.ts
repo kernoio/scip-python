@@ -7,6 +7,7 @@ import { DetectOptions } from './MainCommand';
 
 interface ProjectConfig {
     configFile: string;
+    type: string;
 }
 
 export interface ProjectNode {
@@ -36,6 +37,11 @@ const SKIP_DIRS = new Set([
     '.mypy_cache',
     '.pytest_cache',
     '.ruff_cache',
+    'tests',
+    'test',
+    'testing',
+    '__tests__',
+    'fixtures',
 ]);
 
 function shouldSkipDir(dirName: string): boolean {
@@ -319,7 +325,7 @@ function buildProjectNode(
         path: relPath,
         language: 'python',
         buildTool: parsed.buildTool,
-        config: { configFile: parsed.configFile },
+        config: { configFile: parsed.configFile, type: 'python' },
     };
 
     if (internalDeps.length > 0) {
@@ -387,7 +393,7 @@ function buildNonWorkspaceTree(
             path: relPath,
             language: 'python',
             buildTool: parsed.buildTool,
-            config: { configFile: parsed.configFile },
+            config: { configFile: parsed.configFile, type: 'python' },
         };
 
         if (internalDeps.length > 0) {
@@ -428,9 +434,13 @@ src_dir = sys.argv[1]
 siblings = set(sys.argv[2:])
 all_imports = set()
 for root, dirs, files in os.walk(src_dir):
+    dirs[:] = [d for d in dirs if d not in {'tests', 'test', 'testing', '__tests__', 'fixtures', '__pycache__', '.git', 'node_modules', '.venv', 'venv'}]
     for f in files:
-        if f.endswith('.py'):
-            all_imports.update(get_imports(os.path.join(root, f)))
+        if not f.endswith('.py'):
+            continue
+        if f.startswith('test_') or f.endswith('_test.py') or f == 'conftest.py':
+            continue
+        all_imports.update(get_imports(os.path.join(root, f)))
 print(json.dumps(sorted(all_imports.intersection(siblings))))
 `.trim();
 
@@ -586,7 +596,7 @@ export function detect(cwd: string): DetectOutput {
                 path: relPath,
                 language: 'python',
                 buildTool: root.buildTool,
-                config: { configFile: root.configFile },
+                config: { configFile: root.configFile, type: 'python' },
             };
 
             if (internalDeps.length > 0) {

@@ -846,6 +846,7 @@ export function populateTypeVarContextBasedOnExpectedType(
     }
 
     evaluator.inferTypeParameterVarianceForClass(type);
+    evaluator.inferTypeParameterVarianceForClass(expectedType);
 
     // If the expected type is the same as the target type (commonly the case),
     // we can use a faster method.

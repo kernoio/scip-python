@@ -125,7 +125,18 @@ export class ScipPyrightConfig {
         }
 
         const configOptions = new ConfigOptions(projectRoot, this._typeCheckingMode);
-        const defaultExcludes = ['**/node_modules', '**/__pycache__', '**/.*'];
+        const defaultExcludes = [
+            '**/node_modules',
+            '**/__pycache__',
+            '**/.*',
+            '**/tests',
+            '**/test',
+            '**/testing',
+            '**/__tests__',
+            '**/test_*.py',
+            '**/*_test.py',
+            '**/conftest.py',
+        ];
 
         if (commandLineOptions.pythonPath) {
             configOptions.pythonPath = commandLineOptions.pythonPath;
