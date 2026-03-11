@@ -6,6 +6,7 @@ import { diffSnapshot, formatSnapshot, writeSnapshot } from './lib';
 import { Input } from './lsif-typescript/Input';
 import { join } from 'path';
 import { IndexOptions, SnapshotOptions, mainCommand } from './MainCommand';
+import { detectAction } from './detectCommand';
 import { sendStatus, setQuiet, setShowProgressRateLimit } from './status';
 import { Indexer } from './indexer';
 import { exit } from 'process';
@@ -118,10 +119,13 @@ function snapshotAction(snapshotRoot: string, options: SnapshotOptions): void {
 }
 
 export function main(argv: string[]): void {
-    const command = mainCommand(indexAction, snapshotAction, (_) => {
-        throw 'not yet implemented';
-        // console.log('ENVIRONMENT OPTIONS', options);
-        // console.log(getEnvironment(new Set(), '', undefined));
-    });
+    const command = mainCommand(
+        indexAction,
+        snapshotAction,
+        (_) => {
+            throw 'not yet implemented';
+        },
+        detectAction
+    );
     command.parse(argv);
 }

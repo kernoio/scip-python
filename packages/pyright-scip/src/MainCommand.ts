@@ -27,6 +27,10 @@ export interface EnvironmentOptions {
     output: string;
 }
 
+export interface DetectOptions {
+    cwd: string;
+}
+
 export const DEFAULT_OUTPUT_FILE = 'index.scip';
 
 const parseOptionalNum = (value: string) => {
@@ -45,7 +49,8 @@ const parseOptionalNum = (value: string) => {
 export function mainCommand(
     indexAction: (options: IndexOptions) => void,
     snapshotAction: (dir: string, options: SnapshotOptions) => void,
-    environmentAction?: (options: EnvironmentOptions) => void
+    environmentAction?: (options: EnvironmentOptions) => void,
+    detectAction?: (options: DetectOptions) => void
 ): Command {
     const command = new Command();
     command.name('scip-python').version(packageJson.version).description('SCIP indexer for Python');
@@ -111,6 +116,13 @@ export function mainCommand(
         .requiredOption('--output <path>', 'the output path for the json file')
         .action((parsedOptions) => {
             environmentAction!(parsedOptions as EnvironmentOptions);
+        });
+
+    command
+        .command('detect')
+        .option('--cwd <path>', 'root directory to detect Python projects in', process.cwd())
+        .action((parsedOptions) => {
+            detectAction!(parsedOptions as DetectOptions);
         });
 
     return command;
