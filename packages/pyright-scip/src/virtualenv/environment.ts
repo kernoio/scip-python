@@ -57,7 +57,7 @@ function spawnSyncWithRetry(command: string, args: string[], timeout?: number): 
     while (true) {
         const result = child_process.spawnSync(command, args, {
             encoding: 'utf8',
-            maxBuffer: maxBuffer,
+            maxBuffer: maxBuffer, shell: process.platform === 'win32',
             timeout: timeout, // Will be undefined if not provided, which is fine
         });
 
