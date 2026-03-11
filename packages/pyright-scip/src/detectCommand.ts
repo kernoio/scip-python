@@ -21,6 +21,7 @@ export interface ProjectNode {
 }
 
 export interface DetectOutput {
+    tool: string;
     projects: ProjectNode[];
 }
 
@@ -545,7 +546,7 @@ export function detect(cwd: string): DetectOutput {
     const allParsed = [...parsedPyprojects, ...parsedSetupFiles];
 
     if (allParsed.length === 0) {
-        return { projects: [] };
+        return { tool: 'python', projects: [] };
     }
 
     const allParsedByDir = new Map<string, ParsedProject>();
@@ -630,7 +631,7 @@ export function detect(cwd: string): DetectOutput {
         }
     }
 
-    return { projects: topLevelNodes };
+    return { tool: 'python', projects: topLevelNodes };
 }
 
 export function detectAction(options: DetectOptions): void {
