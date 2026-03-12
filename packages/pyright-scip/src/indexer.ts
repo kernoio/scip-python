@@ -192,34 +192,29 @@ export class Indexer {
             })
         );
 
-        // Run program analysis once.
-        withStatus('Parse and search for dependencies', analyzer_fn);
-
-        // let projectSourceFiles: SourceFile[] = this.program.getTracked().map((f) => f.sourceFile);
         let projectSourceFiles: SourceFile[] = [];
-        withStatus('Index workspace and track project files', () => {
-            this.program.indexWorkspace((filepath: string) => {
-                if (filepath.indexOf(this.getProjectRoot()) != 0) {
-                    return;
+
+        withStatus('Parse and discover dependencies', () => {
+            this.program.parseTrackedFiles();
+
+            for (const filepath of this.projectFiles) {
+                const sourceFile = this.program.getSourceFile(filepath);
+                if (!sourceFile) {
+                    continue;
                 }
 
-                const sourceFile = this.program.getSourceFile(filepath)!;
+                if (filepath.indexOf(this.getProjectRoot()) != 0) {
+                    continue;
+                }
+
                 projectSourceFiles.push(sourceFile);
 
-                let requestsImport = sourceFile.getImports();
-                requestsImport.forEach((entry) =>
-                    // entry.resolvedPaths are all normalized.
+                sourceFile.getImports().forEach((entry) =>
                     entry.resolvedPaths.forEach((value) => {
                         this.program.addTrackedFile(value, true, false);
                     })
                 );
-            }, token);
-        });
-
-        // Mark every original sourceFile as dirty so that we can
-        // visit them and only them via the program again (with all dependencies noted)
-        projectSourceFiles.forEach((sourceFile) => {
-            sourceFile.markDirty(true);
+            }
         });
 
         withStatus('Analyze project and dependencies', analyzer_fn);

@@ -612,6 +612,14 @@ export class Program {
     // whether the method needs to be called again to complete the
     // analysis. In interactive mode, the timeout is always limited
     // to the smaller value to maintain responsiveness.
+    parseTrackedFiles(): void {
+        for (const sourceFileInfo of this._sourceFileList) {
+            if (isUserCode(sourceFileInfo)) {
+                this._parseFile(sourceFileInfo);
+            }
+        }
+    }
+
     analyze(maxTime?: MaxAnalysisTime, token: CancellationToken = CancellationToken.None): boolean {
         return this._runEvaluatorWithCancellationToken(token, () => {
             const elapsedTime = new Duration();
