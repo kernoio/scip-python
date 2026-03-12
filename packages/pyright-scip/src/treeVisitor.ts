@@ -1051,6 +1051,10 @@ export class TreeVisitor extends ParseTreeWalker {
     }
 
     private makeScipSymbol(pythonPackage: PythonPackage, moduleName: string, node: ParseNode): ScipSymbol {
+        if (!pythonPackage) {
+            return ScipSymbol.local(this.counter.next());
+        }
+
         switch (node.nodeType) {
             case ParseNodeType.Module: {
                 moduleName = getFileInfo(node).moduleName;

@@ -194,9 +194,7 @@ export class Indexer {
 
         let projectSourceFiles: SourceFile[] = [];
 
-        withStatus('Parse and discover dependencies', () => {
-            this.program.parseTrackedFiles();
-
+        withStatus('Collect project source files', () => {
             for (const filepath of this.projectFiles) {
                 const sourceFile = this.program.getSourceFile(filepath);
                 if (!sourceFile) {
@@ -208,12 +206,6 @@ export class Indexer {
                 }
 
                 projectSourceFiles.push(sourceFile);
-
-                sourceFile.getImports().forEach((entry) =>
-                    entry.resolvedPaths.forEach((value) => {
-                        this.program.addTrackedFile(value, true, false);
-                    })
-                );
             }
         });
 
