@@ -1,5 +1,4 @@
 import * as child_process from 'child_process';
-import * as fs from 'fs';
 import * as path from 'path';
 import * as TOML from '@iarna/toml';
 import { Event } from 'vscode-languageserver/lib/common/api';
@@ -17,14 +16,12 @@ import { SourceFile } from 'pyright-internal/analyzer/sourceFile';
 import { getFileInfo } from 'pyright-internal/analyzer/analyzerNodeInfo';
 import { Counter } from './lsif-typescript/Counter';
 import { PyrightFileSystem } from 'pyright-internal/pyrightFileSystem';
-import PythonEnvironment from './virtualenv/PythonEnvironment';
 import { version } from 'package.json';
 import { FileMatcher } from './FileMatcher';
 import { sendStatus, StatusUpdater, withStatus } from './status';
 import { scip } from './scip';
 import { ScipPyrightConfig } from './config';
 import { setProjectNamespace } from './symbols';
-import { detect, ProjectNode } from './detectCommand';
 
 export class Indexer {
     program: Program;
@@ -134,8 +131,6 @@ export class Indexer {
         // setTrackedFiles internally handles path normalization, so we don't normalize
         // paths here.
         this.program.setTrackedFiles([...this.projectFiles]);
-        const initialFileCount = this.program.getFileCount();
-        console.log(`DEBUG: After setTrackedFiles - Total files: ${initialFileCount}`);
 
         if (scipConfig.projectNamespace) {
             setProjectNamespace(scipConfig.projectName, this.scipConfig.projectNamespace!);
@@ -143,8 +138,14 @@ export class Indexer {
     }
 
     public index(): void {
-        const projectModulePrefixes = this.detectProjectModules();
-        sendStatus(`Detected ${projectModulePrefixes.size} project modules: [${[...projectModulePrefixes].join(', ')}]`);
+        const projectModulePrefixes = new Set<string>();
+        for (const filepath of this.projectFiles) {
+            const rel = path.relative(this.scipConfig.projectRoot, filepath);
+            const topLevel = rel.split(path.sep)[0];
+            if (topLevel && topLevel !== '.' && topLevel !== '..') {
+                projectModulePrefixes.add(topLevel);
+            }
+        }
 
         const token = {
             isCancellationRequested: false,
@@ -176,12 +177,7 @@ export class Indexer {
                 const filesTotal = this.program.getFileCount();
                 progress.message(`${filesCompleted} / ${filesTotal}`);
             }
-            const finalFileCount = this.program.getFileCount();
-            const finalUserFileCount = this.program.getUserFileCount();
-            console.log(`DEBUG: After analysis - Total files: ${finalFileCount}, User files: ${finalUserFileCount}`);
         };
-
-        const packageConfig = new PythonEnvironment(new Set(), '', []);
 
         const globalSymbols = new Map();
 
@@ -251,7 +247,6 @@ export class Indexer {
                     program: this.program,
                     pyrightConfig: this.pyrightConfig,
                     scipConfig: this.scipConfig,
-                    pythonEnvironment: packageConfig,
                     globalSymbols,
                     projectModulePrefixes,
                 });
@@ -266,7 +261,6 @@ export class Indexer {
                 }
 
                 if (doc.occurrences.length === 0) {
-                    console.log(`file:${filepath} had no occurrences`);
                     return;
                 }
 
@@ -286,34 +280,6 @@ export class Indexer {
         });
 
         sendStatus(`Sucessfully wrote SCIP index to ${this.scipConfig.output}`);
-    }
-
-    private detectProjectModules(): Set<string> {
-        const output = detect(this.scipConfig.projectRoot);
-        const modules = new Set<string>();
-
-        const scanProjectDirs = (nodes: ProjectNode[]) => {
-            for (const node of nodes) {
-                const projectDir = path.resolve(this.scipConfig.projectRoot, node.path);
-                try {
-                    const entries = fs.readdirSync(projectDir, { withFileTypes: true });
-                    for (const entry of entries) {
-                        if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules' && entry.name !== '__pycache__') {
-                            const initPath = path.join(projectDir, entry.name, '__init__.py');
-                            if (fs.existsSync(initPath)) {
-                                modules.add(entry.name);
-                            }
-                        }
-                    }
-                } catch {}
-                if (node.subProjects) {
-                    scanProjectDirs(node.subProjects);
-                }
-            }
-        };
-
-        scanProjectDirs(output.projects);
-        return modules;
     }
 
     private getProjectRoot(): string {

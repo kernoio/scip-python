@@ -45,10 +45,8 @@ import {
     isAliasDeclaration,
     isIntrinsicDeclaration,
 } from 'pyright-internal/analyzer/declaration';
-import { ConfigOptions, ExecutionEnvironment } from 'pyright-internal/common/configOptions';
-import { versionToString } from 'pyright-internal/common/pythonVersion';
+import { ConfigOptions } from 'pyright-internal/common/configOptions';
 import { Program } from 'pyright-internal/analyzer/program';
-import PythonEnvironment from './virtualenv/PythonEnvironment';
 import { Counter } from './lsif-typescript/Counter';
 import PythonPackage from './virtualenv/PythonPackage';
 import * as Hardcoded from './hardcoded';
@@ -60,7 +58,7 @@ import { ClassMemberLookupFlags, lookUpClassMember } from 'pyright-internal/anal
 import { PyrightFileSystem } from 'pyright-internal/pyrightFileSystem';
 import { createFromRealFileSystem } from 'pyright-internal/common/realFileSystem';
 import { normalizePathCase } from 'pyright-internal/common/pathUtils';
-import { assertNeverNormalized, assertSometimesNormalized } from './assertions';
+import { assertSometimesNormalized } from './assertions';
 
 //  Useful functions for later, but haven't gotten far enough yet to use them.
 //      extractParameterDocumentation
@@ -149,7 +147,6 @@ export interface TreeVisitorConfig {
     program: Program;
     pyrightConfig: ConfigOptions;
     scipConfig: ScipConfig;
-    pythonEnvironment: PythonEnvironment;
     globalSymbols: Map<number, ScipSymbol>;
     projectModulePrefixes: Set<string>;
 }
@@ -172,10 +169,8 @@ export class TreeVisitor extends ParseTreeWalker {
 
     private _docstringWriter: TypeStubExtendedWriter;
 
-    private execEnv: ExecutionEnvironment;
     private cwd: string;
     private projectPackage: PythonPackage;
-    private stdlibPackage: PythonPackage;
     private counter: Counter;
 
     public document: scip.Document;
@@ -202,8 +197,6 @@ export class TreeVisitor extends ParseTreeWalker {
         this.globalSymbols = this.config.globalSymbols;
         this.symbolInformationForNode = new Set();
 
-        this.execEnv = this.config.pyrightConfig.getExecutionEnvironments()[0];
-        this.stdlibPackage = new PythonPackage('python-stdlib', versionToString(this.execEnv.pythonVersion), []);
         this.projectPackage = new PythonPackage(
             this.config.scipConfig.projectName,
             this.config.scipConfig.projectVersion,
@@ -463,7 +456,7 @@ export class TreeVisitor extends ParseTreeWalker {
             })
         );
         const symbolPackage = this.moduleNameNodeToPythonPackage(node.module);
-        if (symbolPackage === this.stdlibPackage) {
+        if (!symbolPackage) {
             this.emitExternalSymbolInformation(node.module, symbol, []);
         }
 
@@ -585,12 +578,6 @@ export class TreeVisitor extends ParseTreeWalker {
         }
 
         const isDefinition = decl.node.id === parent.id;
-
-        const builtinType = this.evaluator.getBuiltInType(node, node.value);
-        if (this.isStdlib(decl, builtinType)) {
-            this.emitBuiltinScipSymbol(node, builtinType, decl);
-            return true;
-        }
 
         const declNode = decl.node;
         switch (declNode.nodeType) {
@@ -812,32 +799,6 @@ export class TreeVisitor extends ParseTreeWalker {
         return true;
     }
 
-    private isStdlib(decl: Declaration, builtinType: Type): boolean {
-        if (Types.isUnknown(builtinType)) {
-            return false;
-        }
-
-        if (decl.type !== DeclarationType.Alias && decl.path.startsWith(this.config.scipConfig.projectRoot)) {
-            return false;
-        }
-
-        switch (builtinType.category) {
-            case TypeCategory.Class:
-                return ClassType.isBuiltIn(builtinType) || ClassType.isSpecialBuiltIn(builtinType);
-            case TypeCategory.Module:
-                return isBuiltinModuleName(builtinType.moduleName);
-            case TypeCategory.Function:
-                return isBuiltinModuleName(decl.moduleName);
-            case TypeCategory.OverloadedFunction:
-                return this.isStdlib(decl, builtinType.overloads[0]);
-            case TypeCategory.Union:
-                return builtinType.subtypes.find((subtype) => this.isStdlib(decl, subtype)) !== undefined;
-        }
-
-        softAssert(false, 'Unhandled builtin category:', builtinType);
-        return false;
-    }
-
     private emitNameWithoutDeclaration(node: NameNode): boolean {
         let parent = node.parent!;
         switch (parent.nodeType) {
@@ -970,80 +931,7 @@ export class TreeVisitor extends ParseTreeWalker {
         builtinType: Type | undefined = undefined,
         decl: Declaration | undefined = undefined
     ): ScipSymbol {
-        const node = builtinNode as NameNode;
-        if (builtinType === undefined) {
-            builtinType = this.evaluator.getBuiltInType(node, node.value);
-        }
-
-        if (!Types.isUnknown(builtinType)) {
-            switch (builtinType.category) {
-                case TypeCategory.Function: {
-                    const symbol = this.getIntrinsicSymbol(node);
-                    this.pushNewOccurrence(node, symbol);
-
-                    const doc = builtinType.details.docString;
-                    this.emitExternalSymbolInformation(node, symbol, doc ? [doc] : []);
-                    return symbol;
-                }
-                case TypeCategory.OverloadedFunction: {
-                    if (!decl) {
-                        break;
-                    }
-
-                    const overloadedSymbol = this.getScipSymbol(decl.node);
-                    this.pushNewOccurrence(node, overloadedSymbol);
-
-                    const doc = builtinType.overloads.filter((overload) => overload.details.docString);
-                    const docstring = [];
-                    if (doc.length > 0 && doc[1].details.docString) {
-                        docstring.push(doc[1].details.docString);
-                    }
-
-                    this.emitExternalSymbolInformation(node, overloadedSymbol, docstring);
-                    return overloadedSymbol;
-                }
-                case TypeCategory.Class: {
-                    const symbol = Symbols.makeClass(this.stdlibPackage, 'builtins', node.value);
-                    this.pushNewOccurrence(node, symbol);
-
-                    const doc = builtinType.details.docString;
-                    this.emitExternalSymbolInformation(node, symbol, doc ? [doc] : []);
-                    return symbol;
-                }
-                case TypeCategory.Module: {
-                    const symbol = Symbols.makeModuleInit(this.stdlibPackage, builtinType.moduleName);
-                    this.pushNewOccurrence(node, symbol);
-
-                    this.emitExternalSymbolInformation(node, symbol, []);
-                    return symbol;
-                }
-                case TypeCategory.None: {
-                    return ScipSymbol.empty();
-                }
-                case TypeCategory.Union: {
-                    const subType = builtinType.subtypes[0];
-                    return this.emitBuiltinScipSymbol(builtinNode, subType, decl);
-                }
-
-                // Not sure what to do with TypeVars to be honeest, so fail in dev mode.
-                //  We will do our best with makeScipSymbol later
-                case TypeCategory.TypeVar: {
-                    softAssert(false, 'unexpected TypeVar', builtinNode, builtinType, decl);
-                    break;
-                }
-
-                // `Any` can be for things like __spec__ or other builtins that don't have a required type
-                // (or that pyright doesn't recognize). In this case, we'll follow the default behavior.
-                case TypeCategory.Any:
-                    break;
-
-                case TypeCategory.Never:
-                case TypeCategory.Unbound:
-                    return ScipSymbol.local(this.counter.next());
-            }
-        }
-
-        return this.makeScipSymbol(this.stdlibPackage, 'builtins', node);
+        return ScipSymbol.local(this.counter.next());
     }
 
     private isProjectModule(moduleName: string): boolean {
@@ -1080,7 +968,7 @@ export class TreeVisitor extends ParseTreeWalker {
             case ParseNodeType.Module: {
                 moduleName = getFileInfo(node).moduleName;
                 if (moduleName === 'builtins') {
-                    return Symbols.makeModule(this.stdlibPackage, 'builtins');
+                    return ScipSymbol.local(this.counter.next());
                 } else {
                     return this.safeModule(pythonPackage, moduleName);
                 }
@@ -1446,26 +1334,18 @@ export class TreeVisitor extends ParseTreeWalker {
         );
     }
 
-    // TODO: Can remove module name? or should I pass more info in...
+    private isProjectFile(node: ParseNode): boolean {
+        const fileInfo = getFileInfo(node);
+        if (!fileInfo) return false;
+        return fileInfo.filePath.startsWith(this.config.scipConfig.projectRoot);
+    }
+
+    private packageForNode(node: ParseNode): PythonPackage | undefined {
+        return this.isProjectFile(node) ? this.projectPackage : undefined;
+    }
+
     public getPackageInfo(node: ParseNode, moduleName: string): PythonPackage | undefined {
-        // TODO: This seems really bad performance wise, but we can test that part out later a bit more.
-        const nodeFileInfo = getFileInfo(node)!;
-        const nodeFilePath = path.resolve(nodeFileInfo.filePath);
-
-        // TODO: Should use files from the package to determine this -- should be able to do that quite easily.
-
-        // NOTE: Unlike other code paths where we have
-        // HACK(id: inconsistent-casing-of-resolved-paths),
-        // here, nodeFilePath seems to never be normalized,
-        // so avoid a separate check.
-        assertNeverNormalized(nodeFilePath);
-        if (nodeFilePath.startsWith(this.cwd)) {
-            return this.projectPackage;
-        }
-
-        // This isn't correct: gets the current file, not the import file
-        // let filepath = getFileInfoFromNode(_node)!.filePath;
-        return this.config.pythonEnvironment.getPackageForModule(moduleName);
+        return this.packageForNode(node);
     }
 
     private emitExternalSymbolInformation(node: ParseNode, symbol: ScipSymbol, documentation: string[]) {
@@ -1654,7 +1534,14 @@ export class TreeVisitor extends ParseTreeWalker {
         node: ModuleNameNode,
         decl: Declaration | undefined = undefined
     ): PythonPackage | undefined {
-        // If it has leading dots, then we know it's from this package
+        if (decl && decl.path) {
+            const p = path.resolve(decl.path);
+            if (p.startsWith(this.config.scipConfig.projectRoot)) {
+                return this.projectPackage;
+            }
+            return undefined;
+        }
+
         if (node.leadingDots > 0) {
             return this.projectPackage;
         }
@@ -1664,50 +1551,16 @@ export class TreeVisitor extends ParseTreeWalker {
         }
 
         const declModuleName = _formatModuleName(node);
-        return this.guessPackage(declModuleName, decl ? decl.path : undefined);
+        return this.guessPackage(declModuleName, undefined);
     }
 
     public guessPackage(moduleName: string, declPath: string | undefined = undefined): PythonPackage | undefined {
-        if (moduleName === 'builtins') {
-            return this.stdlibPackage;
-        }
-
-        if (moduleName.startsWith('.')) {
-            return this.projectPackage;
-        }
-
-        if (declPath && declPath.length !== 0) {
+        if (declPath) {
             const p = path.resolve(declPath);
-
-            // HACK(id: inconsistent-casing-of-resolved-paths):
-            // On a case-insensitive filesystem, p can sometimes be fully lowercased
-            // (e.g. see the nested_items test), and sometimes it may have uppercase
-            // characters (e.g. the unique test).
-            assertSometimesNormalized(p, 'guessPackage.declPath.resolved');
-            if (
-                p.startsWith(this.cwd) ||
-                p.startsWith(normalizePathCase(new PyrightFileSystem(createFromRealFileSystem()), this.cwd))
-            ) {
+            if (p.startsWith(this.config.scipConfig.projectRoot)) {
                 return this.projectPackage;
             }
         }
-
-        let pythonPackage = this.config.pythonEnvironment.getPackageForModule(moduleName);
-        if (pythonPackage) {
-            return pythonPackage;
-        }
-
-        pythonPackage = this.config.pythonEnvironment.guessPackage(moduleName);
-        if (pythonPackage) {
-            return pythonPackage;
-        }
-
-        let nameParts = moduleName.split('.');
-        let firstPart = nameParts[0];
-        if (Hardcoded.stdlib_module_names.has(firstPart)) {
-            return this.stdlibPackage;
-        }
-
         return undefined;
     }
 
