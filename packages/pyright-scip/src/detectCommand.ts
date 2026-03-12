@@ -76,7 +76,8 @@ function findProjectMarkers(rootDir: string): string[] {
                 if (
                     entry.name === 'pyproject.toml' ||
                     entry.name === 'setup.py' ||
-                    entry.name === 'setup.cfg'
+                    entry.name === 'setup.cfg' ||
+                    entry.name === 'requirements.txt'
                 ) {
                     markers.push(path.join(dir, entry.name));
                 }
@@ -282,6 +283,26 @@ function parseSetupFiles(markers: string[], existingDirs: Set<string>): ParsedPr
         });
     }
 
+    return results;
+}
+
+function parseRequirementsTxt(markers: string[], existingDirs: Set<string>): ParsedProject[] {
+    const results: ParsedProject[] = [];
+    for (const marker of markers) {
+        if (path.basename(marker) !== 'requirements.txt') continue;
+        const dir = path.dirname(marker);
+        if (existingDirs.has(dir)) continue;
+        results.push({
+            absDir: dir,
+            configFile: 'requirements.txt',
+            name: path.basename(dir).toLowerCase().replace(/_/g, '-'),
+            buildTool: 'pip',
+            buildFiles: ['requirements.txt'],
+            rawDependencies: [],
+            isUvWorkspaceRoot: false,
+            uvWorkspaceMembers: [],
+        });
+    }
     return results;
 }
 
@@ -561,7 +582,9 @@ export function detect(cwd: string): DetectOutput {
     }
 
     const parsedSetupFiles = parseSetupFiles(otherMarkers, pyprojectDirs);
-    const allParsed = [...parsedPyprojects, ...parsedSetupFiles];
+    const setupDirs = new Set([...pyprojectDirs, ...parsedSetupFiles.map((p) => p.absDir)]);
+    const parsedRequirements = parseRequirementsTxt(otherMarkers, setupDirs);
+    const allParsed = [...parsedPyprojects, ...parsedSetupFiles, ...parsedRequirements];
 
     if (allParsed.length === 0) {
         return { tool: 'python', projects: [] };
