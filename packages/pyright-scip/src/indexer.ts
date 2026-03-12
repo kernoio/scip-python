@@ -16,6 +16,7 @@ import { SourceFile } from 'pyright-internal/analyzer/sourceFile';
 import { Counter } from './lsif-typescript/Counter';
 import { PyrightFileSystem } from 'pyright-internal/pyrightFileSystem';
 import getEnvironment from './virtualenv/environment';
+import PythonPackage from './virtualenv/PythonPackage';
 import { version } from 'package.json';
 import { FileMatcher } from './FileMatcher';
 import { sendStatus, StatusUpdater, withStatus } from './status';
@@ -225,6 +226,7 @@ export class Indexer {
         withStatus('Analyze project and dependencies', analyzer_fn);
 
         let externalSymbols: Map<string, scip.SymbolInformation> = new Map();
+        const packageInfoCache: Map<string, PythonPackage | undefined> = new Map();
         const BATCH_SIZE = 50;
         withStatus('Parse and emit SCIP', (progress) => {
             const typeEvaluator = this.program.evaluator!;
@@ -258,6 +260,7 @@ export class Indexer {
                     scipConfig: this.scipConfig,
                     pythonEnvironment: packageConfig,
                     globalSymbols,
+                    packageInfoCache,
                 });
 
                 try {
