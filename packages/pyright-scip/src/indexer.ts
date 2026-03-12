@@ -1,4 +1,5 @@
 import * as child_process from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as TOML from '@iarna/toml';
 import { Event } from 'vscode-languageserver/lib/common/api';
@@ -23,6 +24,7 @@ import { sendStatus, StatusUpdater, withStatus } from './status';
 import { scip } from './scip';
 import { ScipPyrightConfig } from './config';
 import { setProjectNamespace } from './symbols';
+import { detect, ProjectNode } from './detectCommand';
 
 export class Indexer {
     program: Program;
@@ -141,6 +143,9 @@ export class Indexer {
     }
 
     public index(): void {
+        const projectModulePrefixes = this.detectProjectModules();
+        sendStatus(`Detected ${projectModulePrefixes.size} project modules: [${[...projectModulePrefixes].join(', ')}]`);
+
         const token = {
             isCancellationRequested: false,
             onCancellationRequested: Event.None,
@@ -214,20 +219,6 @@ export class Indexer {
 
         withStatus('Analyze project and dependencies', analyzer_fn);
 
-        const projectModulePrefixes = new Set<string>();
-        for (const sourceFile of projectSourceFiles) {
-            const parseResults = sourceFile.getParseResults();
-            if (parseResults) {
-                const fileInfo = getFileInfo(parseResults.parseTree);
-                if (fileInfo) {
-                    const topLevel = fileInfo.moduleName.split('.')[0];
-                    if (topLevel) {
-                        projectModulePrefixes.add(topLevel);
-                    }
-                }
-            }
-        }
-
         let externalSymbols: Map<string, scip.SymbolInformation> = new Map();
         const BATCH_SIZE = 50;
         withStatus('Parse and emit SCIP', (progress) => {
@@ -295,6 +286,34 @@ export class Indexer {
         });
 
         sendStatus(`Sucessfully wrote SCIP index to ${this.scipConfig.output}`);
+    }
+
+    private detectProjectModules(): Set<string> {
+        const output = detect(this.scipConfig.projectRoot);
+        const modules = new Set<string>();
+
+        const scanProjectDirs = (nodes: ProjectNode[]) => {
+            for (const node of nodes) {
+                const projectDir = path.resolve(this.scipConfig.projectRoot, node.path);
+                try {
+                    const entries = fs.readdirSync(projectDir, { withFileTypes: true });
+                    for (const entry of entries) {
+                        if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules' && entry.name !== '__pycache__') {
+                            const initPath = path.join(projectDir, entry.name, '__init__.py');
+                            if (fs.existsSync(initPath)) {
+                                modules.add(entry.name);
+                            }
+                        }
+                    }
+                } catch {}
+                if (node.subProjects) {
+                    scanProjectDirs(node.subProjects);
+                }
+            }
+        };
+
+        scanProjectDirs(output.projects);
+        return modules;
     }
 
     private getProjectRoot(): string {

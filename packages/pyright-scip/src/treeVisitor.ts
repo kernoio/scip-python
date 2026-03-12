@@ -174,11 +174,9 @@ export class TreeVisitor extends ParseTreeWalker {
 
     private execEnv: ExecutionEnvironment;
     private cwd: string;
-    private normalizedCwd: string;
     private projectPackage: PythonPackage;
     private stdlibPackage: PythonPackage;
     private counter: Counter;
-    private packageInfoCache: Map<string, PythonPackage | undefined>;
 
     public document: scip.Document;
     public evaluator: TypeEvaluator;
@@ -203,7 +201,6 @@ export class TreeVisitor extends ParseTreeWalker {
         this.documentSymbols = new Map();
         this.globalSymbols = this.config.globalSymbols;
         this.symbolInformationForNode = new Set();
-        this.packageInfoCache = new Map();
 
         this.execEnv = this.config.pyrightConfig.getExecutionEnvironments()[0];
         this.stdlibPackage = new PythonPackage('python-stdlib', versionToString(this.execEnv.pythonVersion), []);
@@ -214,10 +211,6 @@ export class TreeVisitor extends ParseTreeWalker {
         );
 
         this.cwd = path.resolve(process.cwd());
-        this.normalizedCwd = normalizePathCase(
-            new PyrightFileSystem(createFromRealFileSystem()),
-            this.cwd
-        );
 
         this._docstringWriter = new TypeStubExtendedWriter(this.config.sourceFile, this.evaluator);
     }
@@ -235,7 +228,7 @@ export class TreeVisitor extends ParseTreeWalker {
         const pythonPackage = this.getPackageInfo(node, fileInfo.moduleName);
         if (pythonPackage) {
             if (softAssert(pythonPackage === this.projectPackage, 'expected pythonPackage to be this.projectPackage')) {
-                const symbol = Symbols.makeModuleInit(pythonPackage, fileInfo.moduleName);
+                const symbol = this.safeModuleInit(pythonPackage, fileInfo.moduleName);
 
                 this.document.occurrences.push(
                     new scip.Occurrence({
@@ -508,13 +501,13 @@ export class TreeVisitor extends ParseTreeWalker {
                 );
             })()
         ) {
-            const symbol = Symbols.makeModuleInit(this.projectPackage, moduleName);
+            const symbol = this.safeModuleInit(this.projectPackage, moduleName);
 
             this.pushNewOccurrence(node.module, symbol);
         } else {
             const pythonPackage = this.moduleNameNodeToPythonPackage(node.module);
             if (pythonPackage) {
-                const symbol = Symbols.makeModuleInit(pythonPackage, moduleName);
+                const symbol = this.safeModuleInit(pythonPackage, moduleName);
                 this.pushNewOccurrence(node.module, symbol);
             } else {
                 // For python packages & modules that we cannot resolve,
@@ -620,7 +613,7 @@ export class TreeVisitor extends ParseTreeWalker {
                     assert(declNode != node.parent, 'Must not be the definition');
                     assert(pythonPackage, 'Must have a python package: ' + moduleName);
 
-                    return Symbols.makeModuleInit(pythonPackage, moduleName);
+                    return this.safeModuleInit(pythonPackage, moduleName);
                 });
 
                 // TODO: We could maybe cache this to not always be asking for these names & decls
@@ -770,7 +763,7 @@ export class TreeVisitor extends ParseTreeWalker {
                                     base.details.filePath
                                 )!;
 
-                                const symbol = Symbols.makeClass(
+                                const symbol = this.safeClass(
                                     pythonPackage,
                                     base.details.moduleName,
                                     base.details.name
@@ -821,6 +814,10 @@ export class TreeVisitor extends ParseTreeWalker {
 
     private isStdlib(decl: Declaration, builtinType: Type): boolean {
         if (Types.isUnknown(builtinType)) {
+            return false;
+        }
+
+        if (decl.type !== DeclarationType.Alias && decl.path.startsWith(this.config.scipConfig.projectRoot)) {
             return false;
         }
 
@@ -928,28 +925,26 @@ export class TreeVisitor extends ParseTreeWalker {
             }
 
             moduleName = nodeFileInfo.moduleName;
-            if (moduleName == 'builtins') {
-                return this.emitBuiltinScipSymbol(node);
-            } else if (Hardcoded.stdlib_module_names.has(moduleName)) {
-                const symbol = this.makeScipSymbol(this.stdlibPackage, moduleName, node);
-                this.emitExternalSymbolInformation(node, symbol, []);
-                return symbol;
-            }
-        }
-
-        if (pythonPackage === undefined) {
-            pythonPackage = this.getPackageInfo(node, moduleName);
-            if (!pythonPackage) {
-                if (this.rawGetLsifSymbol(node)) {
-                    return this.rawGetLsifSymbol(node)!;
+            const fileIsInProject = nodeFileInfo.filePath.startsWith(this.config.scipConfig.projectRoot);
+            if (fileIsInProject) {
+                if (moduleName === 'builtins' || Hardcoded.stdlib_module_names.has(moduleName)) {
+                    const relativePath = path.relative(this.config.scipConfig.projectRoot, nodeFileInfo.filePath);
+                    moduleName = relativePath
+                        .replace(/\/__init__\.py$/, '')
+                        .replace(/\.py$/, '')
+                        .replace(/\//g, '.');
                 }
-
-                // let newSymbol = this.makeLsifSymbol(this.projectPackage, "_", node);
+                pythonPackage = this.projectPackage;
+            } else {
                 const newSymbol = ScipSymbol.local(this.counter.next());
                 this.rawSetLsifSymbol(node, newSymbol, true);
                 this.emitSymbolInformationOnce(node, newSymbol);
                 return newSymbol;
             }
+        }
+
+        if (pythonPackage === undefined) {
+            pythonPackage = this.projectPackage;
         }
 
         let newSymbol = this.makeScipSymbol(pythonPackage, moduleName, node);
@@ -1051,39 +1046,56 @@ export class TreeVisitor extends ParseTreeWalker {
         return this.makeScipSymbol(this.stdlibPackage, 'builtins', node);
     }
 
-    private makeScipSymbol(pythonPackage: PythonPackage, moduleName: string, node: ParseNode): ScipSymbol {
-        if (!pythonPackage) {
+    private isProjectModule(moduleName: string): boolean {
+        if (moduleName.startsWith('.')) {
+            return true;
+        }
+        const topLevel = moduleName.split('.')[0];
+        return this.config.projectModulePrefixes.has(topLevel);
+    }
+
+    private safeModuleInit(pythonPackage: PythonPackage, moduleName: string): ScipSymbol {
+        if (!this.isProjectModule(moduleName)) {
             return ScipSymbol.local(this.counter.next());
         }
+        return Symbols.makeModuleInit(pythonPackage, moduleName);
+    }
 
+    private safeModule(pythonPackage: PythonPackage, moduleName: string): ScipSymbol {
+        if (!this.isProjectModule(moduleName)) {
+            return ScipSymbol.local(this.counter.next());
+        }
+        return Symbols.makeModule(pythonPackage, moduleName);
+    }
+
+    private safeClass(pythonPackage: PythonPackage, moduleName: string, name: string): ScipSymbol {
+        if (!this.isProjectModule(moduleName)) {
+            return ScipSymbol.local(this.counter.next());
+        }
+        return Symbols.makeClass(pythonPackage, moduleName, name);
+    }
+
+    private makeScipSymbol(pythonPackage: PythonPackage, moduleName: string, node: ParseNode): ScipSymbol {
         switch (node.nodeType) {
             case ParseNodeType.Module: {
                 moduleName = getFileInfo(node).moduleName;
                 if (moduleName === 'builtins') {
                     return Symbols.makeModule(this.stdlibPackage, 'builtins');
                 } else {
-                    return Symbols.makeModule(pythonPackage, moduleName);
+                    return this.safeModule(pythonPackage, moduleName);
                 }
             }
             case ParseNodeType.ModuleName: {
-                // from .modulename import X
-                //      ^^^^^^^^^^^ -> modulename/__init__
-
                 if (node.nameParts.length === 0) {
-                    if (node.leadingDots > 0) {
-                        return ScipSymbol.local(this.counter.next());
-                    }
-
-                    softAssert(false, 'Unknown ModuleNamer to handle', node);
                     return ScipSymbol.local(this.counter.next());
                 }
 
                 const namePart = node.nameParts[0];
-                if (Hardcoded.stdlib_module_names.has(namePart.value)) {
-                    pythonPackage = this.stdlibPackage;
+                if (!this.config.projectModulePrefixes.has(namePart.value)) {
+                    return ScipSymbol.local(this.counter.next());
                 }
 
-                return Symbols.makeModuleInit(
+                return this.safeModuleInit(
                     pythonPackage,
                     node.nameParts.map((namePart) => namePart.value).join('.')
                 );
@@ -1135,18 +1147,16 @@ export class TreeVisitor extends ParseTreeWalker {
                                 const bound = typeVar.details.boundType! as ClassType;
 
                                 return this.getSymbolOnce(node, () => {
-                                    const pythonPackage = this.getPackageInfo(node, bound.details.moduleName);
-                                    if (!pythonPackage) {
-                                        return ScipSymbol.local(this.counter.next());
-                                    }
+                                    const pythonPackage = this.getPackageInfo(node, bound.details.moduleName)!;
                                     let symbol = Symbols.makeTerm(
                                         Symbols.makeType(
-                                            Symbols.makeModule(pythonPackage, bound.details.moduleName),
+                                            this.safeModule(pythonPackage, bound.details.moduleName),
                                             bound.details.name
                                         ),
                                         node.value
                                     );
 
+                                    // TODO: We might not want to do this if it's not the definition?
                                     this.emitSymbolInformationOnce(node, symbol);
                                     return symbol;
                                 });
@@ -1216,7 +1226,11 @@ export class TreeVisitor extends ParseTreeWalker {
                 return this.getScipSymbol(node.parent!);
             }
             case ParseNodeType.ImportAs: {
-                return Symbols.makeModuleInit(pythonPackage, moduleName);
+                const importTopLevel = moduleName.split('.')[0];
+                if (!this.config.projectModulePrefixes.has(importTopLevel)) {
+                    return ScipSymbol.local(this.counter.next());
+                }
+                return this.safeModuleInit(pythonPackage, moduleName);
             }
             case ParseNodeType.ImportFrom: {
                 const importPackage = this.moduleNameNodeToPythonPackage(node.module);
@@ -1255,7 +1269,7 @@ export class TreeVisitor extends ParseTreeWalker {
                                     const pythonPackage =
                                         this.moduleNameNodeToPythonPackage(parent.module) || this.projectPackage;
 
-                                    return Symbols.makeModuleInit(
+                                    return this.safeModuleInit(
                                         pythonPackage,
                                         [...parent.module.nameParts, node.name].map((part) => part.value).join('.')
                                     );
@@ -1329,12 +1343,12 @@ export class TreeVisitor extends ParseTreeWalker {
                 if (!pythonPackage) {
                     return ScipSymbol.local(this.counter.next());
                 }
-                const symbol = Symbols.makeClass(pythonPackage, classType.details.moduleName, classType.details.name);
+                const symbol = this.safeClass(pythonPackage, classType.details.moduleName, classType.details.name);
                 return Symbols.makeMethod(symbol, decl.node.name.value);
             }
             return ScipSymbol.local(this.counter.next());
         } else {
-            return Symbols.makeMethod(Symbols.makeModule(pythonPackage, declModuleName), decl.node.name.value);
+            return Symbols.makeMethod(this.safeModule(pythonPackage, declModuleName), decl.node.name.value);
         }
     }
 
@@ -1364,7 +1378,7 @@ export class TreeVisitor extends ParseTreeWalker {
             if (!pythonPackage) {
                 return ScipSymbol.local(this.counter.next());
             }
-            return Symbols.makeClass(pythonPackage, typeObj.details.moduleName, node.value);
+            return this.safeClass(pythonPackage, typeObj.details.moduleName, node.value);
         } else if (Types.isClassInstance(typeObj)) {
             typeObj = typeObj as ClassType;
             throw 'oh yayaya';
@@ -1376,7 +1390,7 @@ export class TreeVisitor extends ParseTreeWalker {
             if (!pythonPackage) {
                 return ScipSymbol.local(this.counter.next());
             }
-            return Symbols.makeModuleInit(pythonPackage, typeObj.moduleName);
+            return this.safeModuleInit(pythonPackage, typeObj.moduleName);
         } else if (Types.isOverloadedFunction(typeObj)) {
             if (!typeObj.overloads) {
                 softAssert(false, "Didn't think it would be possible to have overloaded w/ no overloads");
@@ -1432,20 +1446,26 @@ export class TreeVisitor extends ParseTreeWalker {
         );
     }
 
+    // TODO: Can remove module name? or should I pass more info in...
     public getPackageInfo(node: ParseNode, moduleName: string): PythonPackage | undefined {
-        if (this.packageInfoCache.has(moduleName)) {
-            return this.packageInfoCache.get(moduleName);
+        // TODO: This seems really bad performance wise, but we can test that part out later a bit more.
+        const nodeFileInfo = getFileInfo(node)!;
+        const nodeFilePath = path.resolve(nodeFileInfo.filePath);
+
+        // TODO: Should use files from the package to determine this -- should be able to do that quite easily.
+
+        // NOTE: Unlike other code paths where we have
+        // HACK(id: inconsistent-casing-of-resolved-paths),
+        // here, nodeFilePath seems to never be normalized,
+        // so avoid a separate check.
+        assertNeverNormalized(nodeFilePath);
+        if (nodeFilePath.startsWith(this.cwd)) {
+            return this.projectPackage;
         }
 
-        let result: PythonPackage | undefined;
-
-        const topLevel = moduleName.split('.')[0];
-        if (this.config.projectModulePrefixes.has(topLevel)) {
-            result = this.projectPackage;
-        }
-
-        this.packageInfoCache.set(moduleName, result);
-        return result;
+        // This isn't correct: gets the current file, not the import file
+        // let filepath = getFileInfoFromNode(_node)!.filePath;
+        return this.config.pythonEnvironment.getPackageForModule(moduleName);
     }
 
     private emitExternalSymbolInformation(node: ParseNode, symbol: ScipSymbol, documentation: string[]) {
@@ -1648,6 +1668,10 @@ export class TreeVisitor extends ParseTreeWalker {
     }
 
     public guessPackage(moduleName: string, declPath: string | undefined = undefined): PythonPackage | undefined {
+        if (moduleName === 'builtins') {
+            return this.stdlibPackage;
+        }
+
         if (moduleName.startsWith('.')) {
             return this.projectPackage;
         }
@@ -1655,19 +1679,33 @@ export class TreeVisitor extends ParseTreeWalker {
         if (declPath && declPath.length !== 0) {
             const p = path.resolve(declPath);
 
+            // HACK(id: inconsistent-casing-of-resolved-paths):
+            // On a case-insensitive filesystem, p can sometimes be fully lowercased
+            // (e.g. see the nested_items test), and sometimes it may have uppercase
+            // characters (e.g. the unique test).
             assertSometimesNormalized(p, 'guessPackage.declPath.resolved');
             if (
                 p.startsWith(this.cwd) ||
-                p.startsWith(this.normalizedCwd)
+                p.startsWith(normalizePathCase(new PyrightFileSystem(createFromRealFileSystem()), this.cwd))
             ) {
                 return this.projectPackage;
             }
-            return undefined;
         }
 
-        const topLevel = moduleName.split('.')[0];
-        if (this.config.projectModulePrefixes.has(topLevel)) {
-            return this.projectPackage;
+        let pythonPackage = this.config.pythonEnvironment.getPackageForModule(moduleName);
+        if (pythonPackage) {
+            return pythonPackage;
+        }
+
+        pythonPackage = this.config.pythonEnvironment.guessPackage(moduleName);
+        if (pythonPackage) {
+            return pythonPackage;
+        }
+
+        let nameParts = moduleName.split('.');
+        let firstPart = nameParts[0];
+        if (Hardcoded.stdlib_module_names.has(firstPart)) {
+            return this.stdlibPackage;
         }
 
         return undefined;
