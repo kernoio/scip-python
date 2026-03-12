@@ -620,7 +620,7 @@ export class Program {
         }
     }
 
-    analyze(maxTime?: MaxAnalysisTime, token: CancellationToken = CancellationToken.None): boolean {
+    analyze(maxTime?: MaxAnalysisTime, token: CancellationToken = CancellationToken.None, targetOnly?: string): boolean {
         return this._runEvaluatorWithCancellationToken(token, () => {
             const elapsedTime = new Duration();
 
@@ -631,8 +631,11 @@ export class Program {
             if (openFiles.length > 0) {
                 const effectiveMaxTime = maxTime ? maxTime.openFilesTimeInMs : Number.MAX_VALUE;
 
-                // Check the open files.
                 for (const sourceFileInfo of openFiles) {
+                    if (targetOnly && !sourceFileInfo.sourceFile.getFilePath().startsWith(targetOnly)) {
+                        continue;
+                    }
+
                     if (this._checkTypes(sourceFileInfo, token)) {
                         if (elapsedTime.getDurationInMilliseconds() > effectiveMaxTime) {
                             return true;
@@ -640,9 +643,6 @@ export class Program {
                     }
                 }
 
-                // If the caller specified a maxTime, return at this point
-                // since we've finalized all open files. We want to get
-                // the results to the user as quickly as possible.
                 if (maxTime !== undefined) {
                     return true;
                 }
@@ -651,9 +651,12 @@ export class Program {
             if (!this._configOptions.checkOnlyOpenFiles) {
                 const effectiveMaxTime = maxTime ? maxTime.noOpenFilesTimeInMs : Number.MAX_VALUE;
 
-                // Now do type parsing and analysis of the remaining.
                 for (const sourceFileInfo of this._sourceFileList) {
                     if (!isUserCode(sourceFileInfo)) {
+                        continue;
+                    }
+
+                    if (targetOnly && !sourceFileInfo.sourceFile.getFilePath().startsWith(targetOnly)) {
                         continue;
                     }
 

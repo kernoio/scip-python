@@ -143,10 +143,11 @@ export class Indexer {
             onCancellationRequested: Event.None,
         };
 
+        const targetOnly = this.scipConfig.targetOnly;
         let failedAnalysis = 0;
         let safe_analyze = () => {
             try {
-                return this.program.analyze({ openFilesTimeInMs: 10000, noOpenFilesTimeInMs: 10000 });
+                return this.program.analyze({ openFilesTimeInMs: 10000, noOpenFilesTimeInMs: 10000 }, token, targetOnly);
             } catch (e) {
                 // Allow 100 failed attempts before we give up analysis.
                 //  This shouldn't happen often because it means there's a bug in pyright that
