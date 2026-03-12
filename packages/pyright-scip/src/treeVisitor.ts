@@ -173,6 +173,7 @@ export class TreeVisitor extends ParseTreeWalker {
 
     private execEnv: ExecutionEnvironment;
     private cwd: string;
+    private normalizedCwd: string;
     private projectPackage: PythonPackage;
     private stdlibPackage: PythonPackage;
     private counter: Counter;
@@ -210,6 +211,10 @@ export class TreeVisitor extends ParseTreeWalker {
         );
 
         this.cwd = path.resolve(process.cwd());
+        this.normalizedCwd = normalizePathCase(
+            new PyrightFileSystem(createFromRealFileSystem()),
+            this.cwd
+        );
 
         this._docstringWriter = new TypeStubExtendedWriter(this.config.sourceFile, this.evaluator);
     }
@@ -1649,7 +1654,7 @@ export class TreeVisitor extends ParseTreeWalker {
             assertSometimesNormalized(p, 'guessPackage.declPath.resolved');
             if (
                 p.startsWith(this.cwd) ||
-                p.startsWith(normalizePathCase(new PyrightFileSystem(createFromRealFileSystem()), this.cwd))
+                p.startsWith(this.normalizedCwd)
             ) {
                 return this.projectPackage;
             }
