@@ -177,6 +177,7 @@ export class TreeVisitor extends ParseTreeWalker {
     private projectPackage: PythonPackage;
     private stdlibPackage: PythonPackage;
     private counter: Counter;
+    private packageInfoCache: Map<string, PythonPackage | undefined>;
 
     public document: scip.Document;
     public evaluator: TypeEvaluator;
@@ -201,6 +202,7 @@ export class TreeVisitor extends ParseTreeWalker {
         this.documentSymbols = new Map();
         this.globalSymbols = this.config.globalSymbols;
         this.symbolInformationForNode = new Set();
+        this.packageInfoCache = new Map();
 
         this.execEnv = this.config.pyrightConfig.getExecutionEnvironments()[0];
         this.stdlibPackage = new PythonPackage('python-stdlib', versionToString(this.execEnv.pythonVersion), []);
@@ -1414,26 +1416,26 @@ export class TreeVisitor extends ParseTreeWalker {
         );
     }
 
-    // TODO: Can remove module name? or should I pass more info in...
     public getPackageInfo(node: ParseNode, moduleName: string): PythonPackage | undefined {
-        // TODO: This seems really bad performance wise, but we can test that part out later a bit more.
         const nodeFileInfo = getFileInfo(node)!;
         const nodeFilePath = path.resolve(nodeFileInfo.filePath);
 
-        // TODO: Should use files from the package to determine this -- should be able to do that quite easily.
-
-        // NOTE: Unlike other code paths where we have
-        // HACK(id: inconsistent-casing-of-resolved-paths),
-        // here, nodeFilePath seems to never be normalized,
-        // so avoid a separate check.
-        assertNeverNormalized(nodeFilePath);
-        if (nodeFilePath.startsWith(this.cwd)) {
-            return this.projectPackage;
+        const cacheKey = `${nodeFilePath}\0${moduleName}`;
+        if (this.packageInfoCache.has(cacheKey)) {
+            return this.packageInfoCache.get(cacheKey);
         }
 
-        // This isn't correct: gets the current file, not the import file
-        // let filepath = getFileInfoFromNode(_node)!.filePath;
-        return this.config.pythonEnvironment.getPackageForModule(moduleName);
+        let result: PythonPackage | undefined;
+
+        assertNeverNormalized(nodeFilePath);
+        if (nodeFilePath.startsWith(this.cwd)) {
+            result = this.projectPackage;
+        } else {
+            result = this.config.pythonEnvironment.getPackageForModule(moduleName);
+        }
+
+        this.packageInfoCache.set(cacheKey, result);
+        return result;
     }
 
     private emitExternalSymbolInformation(node: ParseNode, symbol: ScipSymbol, documentation: string[]) {
