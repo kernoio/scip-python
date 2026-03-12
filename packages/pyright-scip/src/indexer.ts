@@ -225,8 +225,18 @@ export class Indexer {
         withStatus('Analyze project and dependencies', analyzer_fn);
 
         let externalSymbols: Map<string, scip.SymbolInformation> = new Map();
+        const BATCH_SIZE = 50;
         withStatus('Parse and emit SCIP', (progress) => {
             const typeEvaluator = this.program.evaluator!;
+            let batch: scip.Document[] = [];
+
+            const flushBatch = () => {
+                if (batch.length > 0) {
+                    this.scipConfig.writeIndex(new scip.Index({ documents: batch }));
+                    batch = [];
+                }
+            };
+
             projectSourceFiles.forEach((sourceFile, index) => {
                 progress.progress(`(${index}/${projectSourceFiles.length}): ${sourceFile.getFilePath()}`);
 
@@ -264,12 +274,13 @@ export class Indexer {
                     return;
                 }
 
-                this.scipConfig.writeIndex(
-                    new scip.Index({
-                        documents: [doc],
-                    })
-                );
+                batch.push(doc);
+                if (batch.length >= BATCH_SIZE) {
+                    flushBatch();
+                }
             });
+
+            flushBatch();
         });
 
         withStatus('Writing external symbols to SCIP index', () => {
