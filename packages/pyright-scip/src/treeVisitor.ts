@@ -151,7 +151,6 @@ export interface TreeVisitorConfig {
     scipConfig: ScipConfig;
     pythonEnvironment: PythonEnvironment;
     globalSymbols: Map<number, ScipSymbol>;
-    packageInfoCache: Map<string, PythonPackage | undefined>;
 }
 
 interface ScipSymbolOptions {
@@ -203,7 +202,7 @@ export class TreeVisitor extends ParseTreeWalker {
         this.documentSymbols = new Map();
         this.globalSymbols = this.config.globalSymbols;
         this.symbolInformationForNode = new Set();
-        this.packageInfoCache = config.packageInfoCache;
+        this.packageInfoCache = new Map();
 
         this.execEnv = this.config.pyrightConfig.getExecutionEnvironments()[0];
         this.stdlibPackage = new PythonPackage('python-stdlib', versionToString(this.execEnv.pythonVersion), []);
