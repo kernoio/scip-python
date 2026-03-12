@@ -6,25 +6,22 @@ from typing import (
     Callable,
     Generic,
     Iterable,
-    List,
-    Optional,
     ParamSpec,
     Sequence,
-    Type,
     TypedDict,
     TypeVar,
-    Union,
     overload,
 )
-
 
 T_ParentClass = TypeVar("T_ParentClass", bound="ParentClass")
 
 P = ParamSpec("P")
+T = TypeVar("T")
+S = TypeVar("S")
+U = TypeVar("U", bound=int)
 
 
-def decorator(func: Callable[P, None]) -> Callable[P, int]:
-    ...
+def decorator(func: Callable[P, None]) -> Callable[P, int]: ...
 
 
 class ParentClass:
@@ -61,7 +58,7 @@ class ParentClass:
     def my_method11(self, a: int, b: int):
         return 1
 
-    def my_method12(self, a: Union[int, str]) -> Union[int, str]:
+    def my_method12(self, a: int | str) -> int | str:
         return 1
 
     def my_method13(self, a: int) -> int:
@@ -76,21 +73,16 @@ class ParentClass:
     def my_method16(self, a: int) -> int:
         return 1
 
-    def my_method17(self, a: str, b: int, c: float, d: bool) -> None:
-        ...
+    def my_method17(self, a: str, b: int, c: float, d: bool) -> None: ...
 
-    def my_method18(self, a: str, b: int, c: float, d: bool) -> None:
-        ...
+    def my_method18(self, a: str, b: int, c: float, d: bool) -> None: ...
 
-    def my_method19(self, a: str, b: int, c: float, d: bool) -> None:
-        ...
+    def my_method19(self, a: str, b: int, c: float, d: bool) -> None: ...
 
     @classmethod
-    def my_method20(cls: Type[T_ParentClass], a: str) -> T_ParentClass:
-        ...
+    def my_method20(cls: type[T_ParentClass], a: str) -> T_ParentClass: ...
 
-    def my_method21(self, var: int) -> None:
-        ...
+    def my_method21(self, var: int) -> None: ...
 
     def _protected_method1(self, a: int):
         return 1
@@ -98,72 +90,63 @@ class ParentClass:
     def __private_method1(self, a: int):
         return 1
 
-    def my_method22(self, a: str, b: int, c: float, d: bool) -> None:
-        ...
+    def my_method22(self, a: str, b: int, c: float, d: bool) -> None: ...
 
-    def my_method23(self, a: str = "") -> None:
-        ...
+    def my_method23(self, a: str = "") -> None: ...
 
-    def my_method24(self, a: str) -> None:
-        ...
+    def my_method24(self, a: str) -> None: ...
 
-    def my_method25(self, *, a: str = "") -> None:
-        ...
+    def my_method25(self, *, a: str = "") -> None: ...
 
-    def my_method26(self, *, a: str) -> None:
-        ...
+    def my_method26(self, *, a: str) -> None: ...
 
-    def my_method27(self, a: object, /) -> None:
-        ...
+    def my_method27(self, a: object, /) -> None: ...
 
-    def my_method28(self, __a: object) -> None:
-        ...
+    def my_method28(self, __a: object) -> None: ...
 
     @classmethod
-    def my_method29(cls, /) -> None:
-        ...
+    def my_method29(cls, /) -> None: ...
 
     @classmethod
-    def my_method30(cls, /) -> None:
-        ...
+    def my_method30(cls, /) -> None: ...
 
     @staticmethod
-    def my_method31(a: "Type[ParentClass]", /) -> None:
-        ...
+    def my_method31(a: "type[ParentClass]", /) -> None: ...
 
     @staticmethod
-    def my_method32(a: "Type[ParentClass]", /) -> None:
-        ...
+    def my_method32(a: "type[ParentClass]", /) -> None: ...
 
-    def my_method33(self, /) -> None:
-        ...
+    def my_method33(self, /) -> None: ...
 
-    def my_method34(self, /) -> None:
-        ...
+    def my_method34(self, /) -> None: ...
 
-    def my_method35(self, *, a: int) -> None:
-        ...
+    def my_method35(self, *, a: int) -> None: ...
 
-    def my_method36(self, *, a: int) -> None:
-        ...
+    def my_method36(self, *, a: int) -> None: ...
 
-    def my_method37(self, a: int, /) -> None:
-        ...
+    def my_method37(self, a: int, /) -> None: ...
 
-    def my_method38(self, a: int, /) -> None:
-        ...
+    def my_method38(self, a: int, /) -> None: ...
 
-    def my_method39(self, a: int, /) -> None:
-        ...
+    def my_method39(self, a: int, /) -> None: ...
 
-    def my_method40(self, a: int, /) -> None:
-        ...
+    def my_method40(self, a: int, /) -> None: ...
 
-    def my_method41(self, a: int, b: str, c: str) -> None:
-        ...
+    def my_method41(self, a: int, b: str, c: str) -> None: ...
 
-    def my_method42(self, a: int, b: int, c: str) -> None:
-        ...
+    def my_method42(self, a: int, b: int, c: str) -> None: ...
+
+    my_method43: Callable[..., None]
+
+    def my_method44(self, *args: object, **kwargs: object) -> None: ...
+
+    def my_method45(self, __i: int) -> None: ...
+
+    def __my_method46__(self, x: int) -> None: ...
+
+    def __my_method47__(self, x: int) -> None: ...
+
+    def my_method48(self, /, **kwargs: object) -> None: ...
 
 
 T_ChildClass = TypeVar("T_ChildClass", bound="ChildClass")
@@ -215,12 +198,12 @@ class ChildClass(ParentClass):
     def my_method12(self, a: int) -> int:
         return 1
 
-    def my_method13(self, a: Union[int, str]) -> int:
+    def my_method13(self, a: int | str) -> int:
         return 1
 
     # This should generate an error because the return type is
     # wider than in the original method.
-    def my_method14(self, a: int) -> Union[int, str]:
+    def my_method14(self, a: int) -> int | str:
         return 1
 
     # This should generate an error because we're overriding a
@@ -232,24 +215,19 @@ class ChildClass(ParentClass):
     class my_method16:
         pass
 
-    def my_method17(self, *args: object, **kwargs: object) -> None:
-        ...
+    def my_method17(self, *args: object, **kwargs: object) -> None: ...
 
-    def my_method18(self, a: str, *args: object, **kwargs: object) -> None:
-        ...
+    def my_method18(self, a: str, *args: object, **kwargs: object) -> None: ...
 
     # This should generate an error because b param doesn't match a in name.
-    def my_method19(self, b: str, *args: object, **kwargs: object) -> None:
-        ...
+    def my_method19(self, b: str, *args: object, **kwargs: object) -> None: ...
 
     @classmethod
-    def my_method20(cls: Type[T_ChildClass], a: str) -> T_ChildClass:
-        ...
+    def my_method20(cls: type[T_ChildClass], a: str) -> T_ChildClass: ...
 
     # This should generate an error.
     @decorator
-    def my_method21(self, var: int) -> None:
-        ...
+    def my_method21(self, var: int) -> None: ...
 
     # This should generate an error.
     def _protected_method1(self):
@@ -259,123 +237,115 @@ class ChildClass(ParentClass):
         return 1
 
     # This should generate an error.
-    def my_method22(self, a: str, b: int, c: float, d: bool, /) -> None:
-        ...
+    def my_method22(self, a: str, b: int, c: float, d: bool, /) -> None: ...
 
     # This should generate an error because a is missing a default value.
-    def my_method23(self, a: str) -> None:
-        ...
+    def my_method23(self, a: str) -> None: ...
 
-    def my_method24(self, a: str = "") -> None:
-        ...
+    def my_method24(self, a: str = "") -> None: ...
 
     # This should generate an error because a is missing a default value.
-    def my_method25(self, *, a: str) -> None:
-        ...
+    def my_method25(self, *, a: str) -> None: ...
 
-    def my_method26(self, *, a: str = "") -> None:
-        ...
+    def my_method26(self, *, a: str = "") -> None: ...
 
-    def my_method27(self, __a: object) -> None:
-        ...
+    def my_method27(self, __a: object) -> None: ...
 
-    def my_method28(self, a: object, /) -> None:
-        ...
+    def my_method28(self, a: object, /) -> None: ...
 
     # This should generate an error because it is not a classmethod.
-    def my_method29(self, /) -> None:
-        ...
+    def my_method29(self, /) -> None: ...
 
     # This should generate an error because it is not a classmethod.
     @staticmethod
-    def my_method30(a: Type[ParentClass], /) -> None:
-        ...
+    def my_method30(a: type[ParentClass], /) -> None: ...
 
     # This should generate an error because it is not a staticmethod.
     @classmethod
-    def my_method31(cls, /) -> None:
-        ...
+    def my_method31(cls, /) -> None: ...
 
     # This should generate an error because it is not a staticmethod.
-    def my_method32(self, /) -> None:
-        ...
+    def my_method32(self, /) -> None: ...
 
     # This should generate an error because it is not an instance method.
     @classmethod
-    def my_method33(cls, /) -> None:
-        ...
+    def my_method33(cls, /) -> None: ...
 
     # This should generate an error because it is not an instance method.
     @staticmethod
-    def my_method34(a: Type[ParentClass], /) -> None:
-        ...
+    def my_method34(a: type[ParentClass], /) -> None: ...
 
-    def my_method35(self, **kwargs: int) -> None:
-        ...
+    def my_method35(self, **kwargs: int) -> None: ...
 
     # This should generate an error because the method in the parent
     # class has a keyword-only parameter that is type 'int', and this
     # isn't compatible with 'str'.
-    def my_method36(self, **kwargs: str) -> None:
-        ...
+    def my_method36(self, **kwargs: str) -> None: ...
 
-    def my_method37(self, *args: Any) -> None:
-        ...
+    def my_method37(self, *args: Any) -> None: ...
 
     # This should generate an error because the number of position-only
     # parameters doesn't match.
-    def my_method38(self, **kwargs: Any) -> None:
-        ...
+    def my_method38(self, **kwargs: Any) -> None: ...
 
-    def my_method39(self, *args: Any) -> None:
-        ...
+    def my_method39(self, *args: Any) -> None: ...
 
     # This should generate an error because the number of position-only
     # parameters doesn't match.
-    def my_method40(self, **kwargs: Any) -> None:
-        ...
+    def my_method40(self, **kwargs: Any) -> None: ...
 
-    def my_method41(self, a: int, *args: str) -> None:
-        ...
+    # This should generate an error because keyword parameters "a"
+    # and "b" are missing.
+    def my_method41(self, a: int, *args: str) -> None: ...
 
     # This should generate an error because args doesn't have the right type.
-    def my_method42(self, a: int, *args: int) -> None:
-        ...
+    def my_method42(self, a: int, *args: int) -> None: ...
+
+    def my_method43(self, a: int, b: str, c: str) -> None: ...
+
+    # This should generate an error because kwargs is missing.
+    def my_method44(self, *object) -> None: ...
+
+    def my_method45(self, i: int, /) -> None: ...
+
+    def __my_method46__(self, y: int) -> None: ...
+
+    # This should generate an error because of a type mismatch.
+    def __my_method47__(self, y: str) -> None: ...
+
+    # This should generate an error because the keyword-only parameter "x: int"
+    # is not compatible with the base method's "**kwargs: object".
+    def my_method48(self, /, *, x: int = 3, **kwargs: object) -> None: ...
+
 
 class A:
-    def test(self, t: Sequence[int]) -> Sequence[str]:
-        ...
+    def test(self, t: Sequence[int]) -> Sequence[str]: ...
 
 
 class GeneralizedArgument(A):
-    def test(self, t: Iterable[int], bbb: str = "") -> Sequence[str]:
-        ...
+    def test(self, t: Iterable[int], bbb: str = "") -> Sequence[str]: ...
 
 
 class NarrowerArgument(A):
-    # This should generate error because List[int] is narrower
+    # This should generate error because list[int] is narrower
     # than Iterable[int].
-    def test(self, t: List[int]) -> Sequence[str]:
-        ...
+    def test(self, t: list[int]) -> Sequence[str]: ...
 
 
 class NarrowerReturn(A):
-    def test(self, t: Sequence[int]) -> List[str]:
-        ...
+    def test(self, t: Sequence[int]) -> list[str]: ...
 
 
 class GeneralizedReturn1(A):
     # This should generate an error because Iterable[str] is
     # wider than Sequence[str].
-    def test(self, t: Sequence[int]) -> Iterable[str]:
-        ...
+    def test(self, t: Sequence[int]) -> Iterable[str]: ...
 
 
 class GeneralizedReturn2(A):
-    # This should generate an error because List[int] is
+    # This should generate an error because list[int] is
     # incompatible with Sequence[str].
-    def test(self, t: Sequence[int]) -> List[int]:
-        ...
+    def test(self, t: Sequence[int]) -> list[int]: ...
 
 
 _T1 = TypeVar("_T1")
@@ -383,12 +353,12 @@ _T2 = TypeVar("_T2")
 
 
 class Base1:
-    def submit(self, fn: Callable[..., _T1], *args: Any, **kwargs: Any) -> List[_T1]:
+    def submit(self, fn: Callable[..., _T1], *args: Any, **kwargs: Any) -> list[_T1]:
         return []
 
 
 class Base2(Base1):
-    def submit(self, fn: Callable[..., _T2], *args: Any, **kwargs: Any) -> List[_T2]:
+    def submit(self, fn: Callable[..., _T2], *args: Any, **kwargs: Any) -> list[_T2]:
         return []
 
 
@@ -401,15 +371,15 @@ _T2B = TypeVar("_T2B", bound=Foo)
 
 
 class ClassA(Generic[_T2A]):
-    def func1(self) -> Optional[_T2A]:
+    def func1(self) -> _T2A | None:
         return None
 
     @property
-    def prop1(self) -> Optional[_T2A]:
+    def prop1(self) -> _T2A | None:
         return None
 
     @property
-    def prop2(self) -> Optional[_T2A]:
+    def prop2(self) -> _T2A | None:
         return None
 
     @prop2.setter
@@ -421,7 +391,7 @@ class ClassA(Generic[_T2A]):
         pass
 
     @property
-    def prop3(self) -> Optional[_T2A]:
+    def prop3(self) -> _T2A | None:
         return None
 
     @prop3.setter
@@ -429,7 +399,7 @@ class ClassA(Generic[_T2A]):
         pass
 
     @property
-    def prop4(self) -> Optional[_T2A]:
+    def prop4(self) -> _T2A | None:
         return None
 
     @prop4.deleter
@@ -440,13 +410,21 @@ class ClassA(Generic[_T2A]):
     def prop5(self) -> int:
         return 3
 
+    @property
+    def prop6(self) -> int:
+        return 3
+
+    @prop6.setter
+    def prop6(self, x: int) -> None:
+        pass
+
 
 class ClassB(ClassA[_T2B]):
     # This should generate an error because a variable
     # cannot override a property.
     prop1: _T2B
 
-    def func1(self) -> Optional[_T2B]:
+    def func1(self) -> _T2B | None:
         return None
 
     @property
@@ -464,13 +442,13 @@ class ClassB(ClassA[_T2B]):
     # This should generate an error because it is missing
     # a setter (fset method).
     @property
-    def prop3(self) -> Optional[_T2B]:
+    def prop3(self) -> _T2B | None:
         return None
 
     # This should generate an error because it is missing
     # a deleter (fdel method).
     @property
-    def prop4(self) -> Optional[_T2B]:
+    def prop4(self) -> _T2B | None:
         return None
 
     # This should generate an error because prop4's getter
@@ -478,6 +456,9 @@ class ClassB(ClassA[_T2B]):
     @property
     def prop5(self) -> str:
         return "hi"
+
+    def func6(self):
+        self.prop6 = 1
 
 
 class Base3:
@@ -487,33 +468,79 @@ class Base3:
 
 class Derived3(Base3):
     @overload
-    def case(self, value: int) -> Iterable[int]:
-        ...
+    def case(self, value: int) -> Iterable[int]: ...
 
     @overload
-    def case(self, value: float) -> Iterable[float]:
-        ...
+    def case(self, value: float) -> Iterable[float]: ...
 
     def case(self, value: Any) -> Iterable[Any]:
         return []
 
 
 class Base4:
-    def a(self) -> int:
-        ...
+    def a(self) -> int: ...
 
 
 class Base5:
-    def a(self) -> int:
-        ...
+    def a(self) -> int: ...
 
 
 class C(Base4, Base5):
     # This should generate two error if reportIncompatibleMethodOverride
     # is enabled.
-    def a(self) -> float:
-        ...
+    def a(self) -> float: ...
 
 
 class MyObject(TypedDict):
-    values: List[str]
+    values: list[str]
+
+
+class Base6(Generic["T"]):
+    def method1(self, v: int) -> None: ...
+
+    def method2(self, v: T) -> None: ...
+
+    def method3(self, v: T) -> None: ...
+
+    def method4(self, v: S) -> S: ...
+
+    def method5(self, v: S) -> S: ...
+
+
+class Derived6(Base6[int], Generic["T"]):
+    # This should generate an error.
+    def method1(self, v: T): ...
+
+    # This should generate an error.
+    def method2(self, v: T) -> None: ...
+
+    def method3(self, v: int) -> None: ...
+
+    def method4(self, v: T) -> T: ...
+
+    def method5(self, v: S) -> S: ...
+
+
+class Base7(Generic[T]):
+    def method1(self, x: T) -> T:
+        return x
+
+
+class Derived7_1(Base7[T]):
+    # This should generate an error.
+    def method1(self, x: S) -> S:
+        return x
+
+
+class Derived7_2(Base7[int]):
+    def method1(self, x: U) -> U:
+        return x
+
+
+class Base8[T]:
+    def method1(self, x: T) -> T: ...
+
+
+class Derived8[T](Base8[T]):
+    # This should generate an error.
+    def method1[U: str](self, x: U) -> U: ...

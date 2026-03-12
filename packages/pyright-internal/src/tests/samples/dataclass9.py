@@ -3,17 +3,18 @@
 # synthesized data classes.
 
 from dataclasses import dataclass
-from typing import Any, Dict, Protocol
+from typing import Any, ClassVar, Protocol
 
 
 class IsDataclass(Protocol):
-    # checking for this attribute seems to currently be
+    # Checking for this attribute seems to currently be
     # the most reliable way to ascertain that something is a dataclass
-    __dataclass_fields__: Dict[str, Any]
+    __dataclass_fields__: ClassVar[dict[str, Any]]
 
 
-def dataclass_only(x: IsDataclass):
-    ...  # do something that only makes sense with a dataclass
+def dataclass_only(
+    x: IsDataclass,
+): ...  # do something that only makes sense with a dataclass
 
 
 @dataclass

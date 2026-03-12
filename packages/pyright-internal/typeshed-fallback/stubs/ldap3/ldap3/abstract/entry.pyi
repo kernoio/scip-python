@@ -1,17 +1,16 @@
 from _typeshed import Incomplete
-from typing import Any
 
 class EntryState:
-    dn: Any
-    status: Any
-    attributes: Any
-    raw_attributes: Any
-    response: Any
-    cursor: Any
-    origin: Any
-    read_time: Any
-    changes: Any
-    definition: Any
+    dn: Incomplete
+    status: Incomplete
+    attributes: Incomplete
+    raw_attributes: Incomplete
+    response: Incomplete
+    cursor: Incomplete
+    origin: Incomplete
+    read_time: Incomplete
+    changes: Incomplete
+    definition: Incomplete
     def __init__(self, dn, cursor) -> None: ...
     def set_status(self, status) -> None: ...
     @property
@@ -47,29 +46,18 @@ class EntryBase:
     def entry_read_time(self): ...
     def entry_to_json(
         self,
-        raw: bool = ...,
-        indent: int = ...,
-        sort: bool = ...,
-        stream: Incomplete | None = ...,
-        checked_attributes: bool = ...,
-        include_empty: bool = ...,
+        raw: bool = False,
+        indent: int = 4,
+        sort: bool = True,
+        stream=None,
+        checked_attributes: bool = True,
+        include_empty: bool = True,
     ): ...
-    def entry_to_ldif(
-        self,
-        all_base64: bool = ...,
-        line_separator: Incomplete | None = ...,
-        sort_order: Incomplete | None = ...,
-        stream: Incomplete | None = ...,
-    ): ...
+    def entry_to_ldif(self, all_base64: bool = False, line_separator=None, sort_order=None, stream=None): ...
 
 class Entry(EntryBase):
     def entry_writable(
-        self,
-        object_def: Incomplete | None = ...,
-        writer_cursor: Incomplete | None = ...,
-        attributes: Incomplete | None = ...,
-        custom_validator: Incomplete | None = ...,
-        auxiliary_class: Incomplete | None = ...,
+        self, object_def=None, writer_cursor=None, attributes=None, custom_validator=None, auxiliary_class=None
     ): ...
 
 class WritableEntry(EntryBase):
@@ -78,10 +66,10 @@ class WritableEntry(EntryBase):
     def __getattr__(self, item: str): ...
     @property
     def entry_virtual_attributes(self): ...
-    def entry_commit_changes(self, refresh: bool = ..., controls: Incomplete | None = ..., clear_history: bool = ...): ...
+    def entry_commit_changes(self, refresh: bool = True, controls=None, clear_history: bool = True): ...
     def entry_discard_changes(self) -> None: ...
     def entry_delete(self) -> None: ...
-    def entry_refresh(self, tries: int = ..., seconds: int = ...): ...
+    def entry_refresh(self, tries: int = 4, seconds: int = 2): ...
     def entry_move(self, destination_dn) -> None: ...
     def entry_rename(self, new_name) -> None: ...
     @property

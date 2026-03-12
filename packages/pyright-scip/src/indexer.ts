@@ -1,15 +1,16 @@
 import * as child_process from 'child_process';
 import * as path from 'path';
 import * as TOML from '@iarna/toml';
-import { Event } from 'vscode-languageserver/lib/common/api';
+import { Event } from 'vscode-jsonrpc';
 
 import { Program } from 'pyright-internal/analyzer/program';
 import { ImportResolver } from 'pyright-internal/analyzer/importResolver';
-import { createFromRealFileSystem } from 'pyright-internal/common/realFileSystem';
+import { createFromRealFileSystem, RealTempFile } from 'pyright-internal/common/realFileSystem';
 import { ConfigOptions } from 'pyright-internal/common/configOptions';
 import { TreeVisitor } from './treeVisitor';
 import { FullAccessHost } from 'pyright-internal/common/fullAccessHost';
-import { normalizePathCase } from 'pyright-internal/common/pathUtils';
+import { UriEx } from 'pyright-internal/common/uri/uriUtils';
+import { createServiceProvider } from 'pyright-internal/common/serviceProviderExtensions';
 import * as url from 'url';
 import { ScipConfig } from './lib';
 import { SourceFile } from 'pyright-internal/analyzer/sourceFile';
@@ -80,13 +81,15 @@ export class Indexer {
         //  have the same methods of configuring, you might just want to change the include/exclude)
         //
         // private _getConfigOptions(host: Host, commandLineOptions: CommandLineOptions): ConfigOptions {
-        let fs = new PyrightFileSystem(createFromRealFileSystem());
-        let config = new ScipPyrightConfig(scipConfig, fs);
+        const tempFile = new RealTempFile();
+        let fs = new PyrightFileSystem(createFromRealFileSystem(tempFile));
+        const serviceProvider = createServiceProvider(fs, tempFile);
+        let config = new ScipPyrightConfig(scipConfig, fs, tempFile);
         this.pyrightConfig = config.getConfigOptions();
 
         if (scipConfig.extraPaths && scipConfig.extraPaths.length > 0) {
             const existing = this.pyrightConfig.defaultExtraPaths ?? [];
-            this.pyrightConfig.defaultExtraPaths = [...existing, ...scipConfig.extraPaths];
+            this.pyrightConfig.defaultExtraPaths = [...existing, ...scipConfig.extraPaths.map((p) => UriEx.file(p))];
         }
 
         if (!scipConfig.projectName || !scipConfig.projectVersion) {
@@ -124,13 +127,11 @@ export class Indexer {
 
         sendStatus(`Total Project Files ${this.projectFiles.size}`);
 
-        const host = new FullAccessHost(fs);
-        this.importResolver = new ImportResolver(fs, this.pyrightConfig, host);
+        const host = new FullAccessHost(serviceProvider);
+        this.importResolver = new ImportResolver(serviceProvider, this.pyrightConfig, host);
 
-        this.program = new Program(this.importResolver, this.pyrightConfig);
-        // setTrackedFiles internally handles path normalization, so we don't normalize
-        // paths here.
-        this.program.setTrackedFiles([...this.projectFiles]);
+        this.program = new Program(this.importResolver, this.pyrightConfig, serviceProvider, undefined, true);
+        this.program.setTrackedFiles([...this.projectFiles].map((p) => UriEx.file(p)));
 
         if (scipConfig.projectNamespace) {
             setProjectNamespace(scipConfig.projectName, this.scipConfig.projectNamespace!);
@@ -173,7 +174,7 @@ export class Indexer {
 
         const analyzer_fn = (progress: StatusUpdater) => {
             while (safe_analyze()) {
-                const filesCompleted = this.program.getFileCount() - this.program.getFilesToAnalyzeCount();
+                const filesCompleted = this.program.getFileCount() - this.program.getFilesToAnalyzeCount().files;
                 const filesTotal = this.program.getFileCount();
                 progress.message(`${filesCompleted} / ${filesTotal}`);
             }
@@ -200,7 +201,7 @@ export class Indexer {
 
         withStatus('Collect project source files', () => {
             for (const filepath of this.projectFiles) {
-                const sourceFile = this.program.getSourceFile(filepath);
+                const sourceFile = this.program.getSourceFile(UriEx.file(filepath));
                 if (!sourceFile) {
                     continue;
                 }
@@ -215,6 +216,8 @@ export class Indexer {
 
         withStatus('Analyze project and dependencies', analyzer_fn);
 
+        this.program.getSourceFileInfoList().forEach((f: any) => f.sourceFile.stripForIndexing());
+
         let externalSymbols: Map<string, scip.SymbolInformation> = new Map();
         const BATCH_SIZE = 50;
         withStatus('Parse and emit SCIP', (progress) => {
@@ -222,22 +225,23 @@ export class Indexer {
             let batch: scip.Document[] = [];
 
             const flushBatch = () => {
-                if (batch.length > 0) {
-                    this.scipConfig.writeIndex(new scip.Index({ documents: batch }));
-                    batch = [];
+                if (batch.length === 0) {
+                    return;
                 }
+                this.scipConfig.writeIndex(new scip.Index({ documents: batch }));
+                batch = [];
             };
 
             projectSourceFiles.forEach((sourceFile, index) => {
-                progress.progress(`(${index}/${projectSourceFiles.length}): ${sourceFile.getFilePath()}`);
+                progress.progress(`(${index}/${projectSourceFiles.length}): ${sourceFile.getUri().getFilePath()}`);
 
-                const filepath = sourceFile.getFilePath();
+                const filepath = sourceFile.getUri().getFilePath();
                 let doc = new scip.Document({
                     relative_path: path.relative(this.getProjectRoot(), filepath),
                 });
 
                 const parseResults = sourceFile.getParseResults();
-                const tree = parseResults?.parseTree!;
+                const tree = parseResults?.parserOutput.parseTree!;
 
                 let visitor = new TreeVisitor({
                     document: doc,
@@ -255,7 +259,7 @@ export class Indexer {
                     visitor.walk(tree);
                 } catch (e) {
                     throw {
-                        currentFilepath: sourceFile.getFilePath(),
+                        currentFilepath: sourceFile.getUri().getFilePath(),
                         error: e,
                     };
                 }

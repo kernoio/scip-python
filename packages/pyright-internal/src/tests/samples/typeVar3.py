@@ -1,27 +1,25 @@
 # This sample tests various diagnostics related to TypeVar usage.
 
-from typing import Callable, Generic, List, Optional, TypeVar
-import typing
+from typing import Callable, Generic, TypeVar, AnyStr
 
 _T = TypeVar("_T")
 _S = TypeVar("_S")
 
 
-class OuterClass(Generic[_T, typing.AnyStr]):
+class OuterClass(Generic[_T, AnyStr]):
     # This should generate an error because _S
     # isn't defined in this context.
     my_var1: _S
 
-    my_var2: typing.AnyStr
+    my_var2: AnyStr
 
     # This should generate an error because _T
     # is already in use.
-    class InnerClass1(Generic[_T]):
-        ...
+    class InnerClass1(Generic[_T]): ...
 
-    # This should generate an error because typing.AnyStr
+    # This should generate an error because AnyStr
     # is already in use.
-    class InnerClass2(Generic[_S, typing.AnyStr]):
+    class InnerClass2(Generic[_S, AnyStr]):
         my_var1: _S
 
         # This should generate an error because _T
@@ -30,17 +28,16 @@ class OuterClass(Generic[_T, typing.AnyStr]):
 
     class InnerClass3:
         # This should generate an error.
-        x: List[_T]
+        x: list[_T]
 
-        def f(self, x: _T, y: _S, z: _S) -> _T:
-            ...
+        def f(self, x: _T, y: _S, z: _S) -> _T: ...
 
-        def g(self, x: typing.AnyStr) -> None:
+        def g(self, x: AnyStr) -> None:
             # This should generate an error.
-            y: List[_T]
+            y: list[_T]
 
 
-def func1(a: _T) -> Optional[_T]:
+def func1(a: _T) -> _T | None:
     my_var1: _T
 
     # This should generate an error
@@ -48,18 +45,17 @@ def func1(a: _T) -> Optional[_T]:
 
     # This should generate an error because _T
     # is already in use.
-    class InnerClass3(Generic[_T]):
-        ...
+    class InnerClass3(Generic[_T]): ...
 
 
 # This should generate an error.
 a: _S = 3
 
 # This should generate an error.
-b: List[_T] = []
+b: list[_T] = []
 
 # This should generate an error.
-c: List[typing.AnyStr] = []
+c: list[AnyStr] = []
 
 
 T = TypeVar("T")
@@ -67,7 +63,11 @@ T = TypeVar("T")
 
 def foo() -> Callable[[T], T]:
     def inner(v: T) -> T:
-        reveal_type(v, expected_text="T@inner")
+        reveal_type(v, expected_text="T@foo")
         return v
 
     return inner
+
+
+# This should generate an error.
+list[T]()

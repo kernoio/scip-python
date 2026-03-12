@@ -1,10 +1,4 @@
-from typing import Any
-from typing_extensions import Literal
+annotation_value_types: tuple[type, ...]
 
-PY2: Literal[False]
-PY35: Literal[True]
-annotation_value_types: Any
-string_types = str
-
-def is_classmethod(func): ...
-def is_instance_method(parent_class, func_name, func): ...
+def is_classmethod(func: object) -> bool: ...  # argument func is passing to getattr() function
+def is_instance_method(parent_class: type, func_name: str, func: object) -> bool: ...

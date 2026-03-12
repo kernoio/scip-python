@@ -10,7 +10,8 @@ class BaseClass(Generic[T]):
     pass
 
 
-IntBaseClass = BaseClass[int]
+IntBaseClass = BaseClass[float]
+
 
 # This should generate an error because the same
 # base class is used twice.

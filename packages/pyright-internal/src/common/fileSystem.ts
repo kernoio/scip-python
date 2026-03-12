@@ -10,25 +10,14 @@
 
 // * NOTE * except tests, this should be only file that import "fs"
 import type * as fs from 'fs';
-
-export type FileWatcherEventType = 'add' | 'addDir' | 'change' | 'unlink' | 'unlinkDir';
-export type FileWatcherEventHandler = (eventName: FileWatcherEventType, path: string, stats?: Stats) => void;
-
-export interface FileWatcher {
-    close(): void;
-}
-
-export interface FileWatcherHandler {
-    onFileChange(eventType: FileWatcherEventType, path: string): void;
-}
-
-export interface FileWatcherProvider {
-    createFileWatcher(paths: string[], listener: FileWatcherEventHandler): FileWatcher;
-}
+import { FileWatcher, FileWatcherEventHandler } from './fileWatcher';
+import { Uri } from './uri/uri';
+import { Disposable } from 'vscode-jsonrpc';
 
 export interface Stats {
     size: number;
     mtimeMs: number;
+    ctimeMs: number;
 
     isFile(): boolean;
     isDirectory(): boolean;
@@ -46,90 +35,89 @@ export interface MkDirOptions {
     // mode: string | number;
 }
 
+export interface ReadOnlyFileSystem {
+    existsSync(uri: Uri): boolean;
+    chdir(uri: Uri): void;
+    readdirEntriesSync(uri: Uri): fs.Dirent[];
+    readdirSync(uri: Uri): string[];
+    readFileSync(uri: Uri, encoding?: null): Buffer;
+    readFileSync(uri: Uri, encoding: BufferEncoding): string;
+    readFileSync(uri: Uri, encoding?: BufferEncoding | null): string | Buffer;
+
+    statSync(uri: Uri): Stats;
+    realpathSync(uri: Uri): Uri;
+    getModulePath(): Uri;
+    // Async I/O
+    readFile(uri: Uri): Promise<Buffer>;
+    readFileText(uri: Uri, encoding?: BufferEncoding): Promise<string>;
+    // Return path in casing on OS.
+    realCasePath(uri: Uri): Uri;
+
+    // See whether the file is mapped to another location.
+    isMappedUri(uri: Uri): boolean;
+
+    // Get original uri if the given uri is mapped.
+    getOriginalUri(mappedUri: Uri): Uri;
+
+    // Get mapped uri if the given uri is mapped.
+    getMappedUri(originalUri: Uri): Uri;
+
+    isInZip(uri: Uri): boolean;
+}
+
+export interface FileSystem extends ReadOnlyFileSystem {
+    mkdirSync(uri: Uri, options?: MkDirOptions): void;
+    writeFileSync(uri: Uri, data: string | Buffer, encoding: BufferEncoding | null): void;
+
+    unlinkSync(uri: Uri): void;
+    rmdirSync(uri: Uri): void;
+
+    createFileSystemWatcher(uris: Uri[], listener: FileWatcherEventHandler): FileWatcher;
+    createReadStream(uri: Uri): fs.ReadStream;
+    createWriteStream(uri: Uri): fs.WriteStream;
+    copyFileSync(uri: Uri, dst: Uri): void;
+
+    mapDirectory(mappedUri: Uri, originalUri: Uri, filter?: (originalUri: Uri, fs: FileSystem) => boolean): Disposable;
+}
+
 export interface TmpfileOptions {
     postfix?: string;
     prefix?: string;
 }
 
-export interface FileSystem {
-    existsSync(path: string): boolean;
-    mkdirSync(path: string, options?: MkDirOptions): void;
-    chdir(path: string): void;
-    readdirEntriesSync(path: string): fs.Dirent[];
-    readdirSync(path: string): string[];
-    readFileSync(path: string, encoding?: null): Buffer;
-    readFileSync(path: string, encoding: BufferEncoding): string;
-    readFileSync(path: string, encoding?: BufferEncoding | null): string | Buffer;
-    writeFileSync(path: string, data: string | Buffer, encoding: BufferEncoding | null): void;
-    statSync(path: string): Stats;
-    unlinkSync(path: string): void;
-    realpathSync(path: string): string;
-    getModulePath(): string;
-    createFileSystemWatcher(paths: string[], listener: FileWatcherEventHandler): FileWatcher;
-    createReadStream(path: string): fs.ReadStream;
-    createWriteStream(path: string): fs.WriteStream;
-    copyFileSync(src: string, dst: string): void;
-    // Async I/O
-    readFile(path: string): Promise<Buffer>;
-    readFileText(path: string, encoding?: BufferEncoding): Promise<string>;
+export interface TempFile {
     // The directory returned by tmpdir must exist and be the same each time tmpdir is called.
-    tmpdir(): string;
-    tmpfile(options?: TmpfileOptions): string;
-
-    // Return path in casing on OS.
-    realCasePath(path: string): string;
-
-    // See whether the file is mapped to another location.
-    isMappedFilePath(filepath: string): boolean;
-
-    // Get original filepath if the given filepath is mapped.
-    getOriginalFilePath(mappedFilePath: string): string;
-
-    // Get mapped filepath if the given filepath is mapped.
-    getMappedFilePath(originalFilepath: string): string;
-
-    getUri(path: string): string;
-
-    isInZipOrEgg(path: string): boolean;
-
-    dispose(): void;
+    tmpdir(): Uri;
+    tmpfile(options?: TmpfileOptions): Uri;
 }
 
-// File watchers can give "changed" event even for a file open. but for those cases,
-// it will give relative path rather than absolute path. To get rid of such cases,
-// we will drop any event with relative paths. this trick is copied from VS Code
-// (https://github.com/microsoft/vscode/blob/main/src/vs/platform/files/node/watcher/unix/chokidarWatcherService.ts)
-export function ignoredWatchEventFunction(paths: string[]) {
-    const normalizedPaths = paths.map((p) => p.toLowerCase());
-    return (path: string): boolean => {
-        if (!path || path.indexOf('__pycache__') >= 0) {
-            return true;
-        }
-        const normalizedPath = path.toLowerCase();
-        return normalizedPaths.every((p) => normalizedPath.indexOf(p) < 0);
-    };
+export namespace FileSystem {
+    export function is(value: any): value is FileSystem {
+        return value.createFileSystemWatcher && value.createReadStream && value.createWriteStream && value.copyFileSync;
+    }
 }
 
-const nullFileWatcher: FileWatcher = {
-    close() {
-        // empty;
-    },
-};
-
-export const nullFileWatcherHandler: FileWatcherHandler = {
-    onFileChange(_1: FileWatcherEventType, _2: string): void {
-        // do nothing
-    },
-};
-
-export const nullFileWatcherProvider: FileWatcherProvider = {
-    createFileWatcher(_1: string[], _2: FileWatcherEventHandler): FileWatcher {
-        return nullFileWatcher;
-    },
-};
+export namespace TempFile {
+    export function is(value: any): value is TempFile {
+        return value.tmpdir && value.tmpfile;
+    }
+}
 
 export class VirtualDirent implements fs.Dirent {
-    constructor(public name: string, private _file: boolean) {}
+    parentPath: string;
+
+    constructor(public name: string, private _file: boolean, parentPath: string) {
+        this.parentPath = parentPath;
+    }
+
+    /**
+     * Alias for `dirent.parentPath`.
+     * @since v20.1.0
+     * @deprecated Since v20.12.0
+     */
+    get path(): string {
+        return this.parentPath;
+    }
 
     isFile(): boolean {
         return this._file;

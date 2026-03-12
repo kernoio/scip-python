@@ -1,18 +1,15 @@
 # This sample tests the case where a method decorator uses an explicit
 # type annotation for the "self" parameter.
 
-from typing import Callable, Generic, TypeVar
+from typing import Callable, Generic, TypeVar, Any
 
-_T = TypeVar("_T")
-
-
-def my_generic_wrapper(
-    f: Callable[["MyClass[_T]"], str]
-) -> Callable[["MyClass[_T]"], int]:
-    ...
+T = TypeVar("T")
+S = TypeVar("S", bound="MyClass[Any]")
 
 
-class MyClass(Generic[_T]):
+def my_generic_wrapper(f: Callable[[S], str]) -> Callable[[S], int]: ...
+
+
+class MyClass(Generic[T]):
     @my_generic_wrapper
-    def do_something(self) -> str:
-        ...
+    def do_something(self) -> str: ...

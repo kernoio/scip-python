@@ -7,56 +7,37 @@
  * Class that represents a single Python source or stub file.
  */
 
-import {
-    CancellationToken,
-    CompletionItem,
-    DocumentHighlight,
-    DocumentSymbol,
-    MarkupKind,
-} from 'vscode-languageserver';
-import { TextDocument, TextDocumentContentChangeEvent } from 'vscode-languageserver-textdocument';
 import { isMainThread } from 'worker_threads';
 
-import * as SymbolNameUtils from '../analyzer/symbolNameUtils';
 import { OperationCanceledException } from '../common/cancellationUtils';
+import { appendArray } from '../common/collectionUtils';
 import {
     ConfigOptions,
+    DiagnosticRuleSet,
     ExecutionEnvironment,
     getBasicDiagnosticRuleSet,
-    SignatureDisplayType,
 } from '../common/configOptions';
 import { ConsoleInterface, StandardConsole } from '../common/console';
 import { assert } from '../common/debug';
-import { TaskListToken } from '../common/diagnostic';
-import { convertLevelToCategory, Diagnostic, DiagnosticCategory } from '../common/diagnostic';
+import { Diagnostic, DiagnosticCategory, TaskListToken, convertLevelToCategory } from '../common/diagnostic';
 import { DiagnosticRule } from '../common/diagnosticRules';
 import { DiagnosticSink, TextRangeDiagnosticSink } from '../common/diagnosticSink';
-import { TextEditAction } from '../common/editAction';
-import { Extensions } from '../common/extensibility';
 import { FileSystem } from '../common/fileSystem';
-import { LogTracker } from '../common/logTracker';
-import { fromLSPAny } from '../common/lspUtils';
-import { getFileName, normalizeSlashes, stripFileExtension } from '../common/pathUtils';
+import { LogTracker, getPathForLogging } from '../common/logTracker';
+import { stripFileExtension } from '../common/pathUtils';
 import { convertOffsetsToRange, convertTextRangeToRange } from '../common/positionUtils';
+import { ServiceKeys } from '../common/serviceKeys';
+import { ServiceProvider } from '../common/serviceProvider';
+import '../common/serviceProviderExtensions';
 import * as StringUtils from '../common/stringUtils';
-import { DocumentRange, getEmptyRange, Position, Range, TextRange } from '../common/textRange';
+import { Range, TextRange, getEmptyRange } from '../common/textRange';
 import { TextRangeCollection } from '../common/textRangeCollection';
 import { Duration, timingStats } from '../common/timing';
-import { ModuleSymbolMap } from '../languageService/autoImporter';
-import { AbbreviationMap, CompletionOptions, CompletionResults } from '../languageService/completionProvider';
-import { CompletionItemData, CompletionProvider } from '../languageService/completionProvider';
-import { DefinitionFilter, DefinitionProvider } from '../languageService/definitionProvider';
-import { DocumentHighlightProvider } from '../languageService/documentHighlightProvider';
-import { DocumentSymbolCollectorUseCase } from '../languageService/documentSymbolCollector';
-import { DocumentSymbolProvider, IndexOptions, IndexResults } from '../languageService/documentSymbolProvider';
-import { HoverProvider, HoverResults } from '../languageService/hoverProvider';
-import { performQuickAction } from '../languageService/quickActions';
-import { ReferenceCallback, ReferencesProvider, ReferencesResult } from '../languageService/referencesProvider';
-import { SignatureHelpProvider, SignatureHelpResults } from '../languageService/signatureHelpProvider';
-import { Localizer } from '../localization/localize';
+import { Uri } from '../common/uri/uri';
+import { LocMessage } from '../localization/localize';
 import { ModuleNode } from '../parser/parseNodes';
-import { ModuleImport, ParseOptions, Parser, ParseResults } from '../parser/parser';
-import { IgnoreComment } from '../parser/tokenizer';
+import { ModuleImport, ParseFileResults, ParseOptions, Parser, ParserOutput } from '../parser/parser';
+import { IgnoreComment, Tokenizer, TokenizerOutput } from '../parser/tokenizer';
 import { Token } from '../parser/tokenizerTypes';
 import { AnalyzerFileInfo, ImportLookup } from './analyzerFileInfo';
 import * as AnalyzerNodeInfo from './analyzerNodeInfo';
@@ -68,7 +49,6 @@ import { ImportResolver } from './importResolver';
 import { ImportResult } from './importResult';
 import { ParseTreeCleanerWalker } from './parseTreeCleaner';
 import { Scope } from './scope';
-import { SourceMapper } from './sourceMapper';
 import { SymbolTable } from './symbol';
 import { TestWalker } from './testWalker';
 import { TypeEvaluator } from './typeEvaluatorTypes';
@@ -78,12 +58,11 @@ const _maxImportCyclesPerFile = 4;
 
 // Allow files up to 50MB in length, same as VS Code.
 // https://github.com/microsoft/vscode/blob/1e750a7514f365585d8dab1a7a82e0938481ea2f/src/vs/editor/common/model/textModel.ts#L194
-const _maxSourceFileSize = 50 * 1024 * 1024;
+export const maxSourceFileSize = 50 * 1024 * 1024;
 
 interface ResolveImportResult {
     imports: ImportResult[];
     builtinsImportResult?: ImportResult | undefined;
-    ipythonDisplayImportResult?: ImportResult | undefined;
 }
 
 // Indicates whether IPython syntax is supported and if so, what
@@ -96,19 +75,148 @@ export enum IPythonMode {
     CellDocs,
 }
 
+// A monotonically increasing number used to create unique file IDs.
+let nextUniqueFileId = 1;
+
+class WriteableData {
+    // Number that is incremented every time the diagnostics
+    // are updated.
+    diagnosticVersion = 0;
+
+    // Generation count of the file contents. When the contents
+    // change, this is incremented.
+    fileContentsVersion = 0;
+
+    // Number that is incremented every time semantic of the file
+    // might have changed.
+    semanticVersion = 0;
+
+    // Length and hash of the file the last time it was read from disk.
+    lastFileContentLength: number | undefined = undefined;
+    lastFileContentHash: number | undefined = undefined;
+
+    // Client's version of the file. Undefined implies that contents
+    // need to be read from disk.
+    clientDocumentContents: string | undefined;
+    clientDocumentVersion: number | undefined;
+
+    // Version of file contents that have been analyzed.
+    analyzedFileContentsVersion = -1;
+
+    // Do we need to walk the parse tree and clean
+    // the binder information hanging from it?
+    parseTreeNeedsCleaning = false;
+
+    parsedFileContents: string | undefined;
+    tokenizerLines: TextRangeCollection<TextRange> | undefined;
+    tokenizerOutput: TokenizerOutput | undefined;
+    lineCount: number | undefined;
+
+    moduleSymbolTable: SymbolTable | undefined;
+
+    // Reentrancy check for binding and checking.
+    isBindingInProgress = false;
+    isCheckingInProgress = false;
+
+    // Diagnostics generated during different phases of analysis.
+    parseDiagnostics: Diagnostic[] = [];
+    commentDiagnostics: Diagnostic[] = [];
+    bindDiagnostics: Diagnostic[] = [];
+    checkerDiagnostics: Diagnostic[] = [];
+    taskListDiagnostics: Diagnostic[] = [];
+    typeIgnoreLines = new Map<number, IgnoreComment>();
+    typeIgnoreAll: IgnoreComment | undefined;
+    pyrightIgnoreLines = new Map<number, IgnoreComment>();
+
+    // Accumulated and filtered diagnostics that combines all of the
+    // above information. This needs to be recomputed any time the
+    // above change.
+    accumulatedDiagnostics: Diagnostic[] = [];
+
+    // Circular dependencies that have been reported in this file.
+    circularDependencies: CircularDependency[] = [];
+    noCircularDependencyConfirmed = false;
+
+    // Did we hit the maximum import depth?
+    hitMaxImportDepth: number | undefined;
+
+    // Do we need to perform a binding step?
+    isBindingNeeded = true;
+
+    // Do we have valid diagnostic results from a checking pass?
+    isCheckingNeeded = true;
+
+    // Time (in ms) that the last check() call required for this file.
+    checkTime: number | undefined;
+
+    // Information about implicit and explicit imports from this file.
+    imports: ImportResult[] | undefined;
+    builtinsImport: ImportResult | undefined;
+    // True if the file appears to have been deleted.
+    isFileDeleted = false;
+
+    parserOutput: ParserOutput | undefined;
+
+    constructor() {
+        // Empty
+    }
+
+    debugPrint() {
+        return `WritableData: 
+ diagnosticVersion=${this.diagnosticVersion}, 
+ noCircularDependencyConfirmed=${this.noCircularDependencyConfirmed}, 
+ isBindingNeeded=${this.isBindingNeeded},
+ isBindingInProgress=${this.isBindingInProgress},
+ isCheckingInProgress=${this.isCheckingInProgress},
+ isCheckingNeeded=${this.isCheckingNeeded},
+ isFileDeleted=${this.isFileDeleted},
+ hitMaxImportDepth=${this.hitMaxImportDepth},
+ parseTreeNeedsCleaning=${this.parseTreeNeedsCleaning},
+ fileContentsVersion=${this.fileContentsVersion},
+ analyzedFileContentsVersion=${this.analyzedFileContentsVersion},
+ clientDocumentVersion=${this.clientDocumentVersion},
+ lastFileContentLength=${this.lastFileContentLength},
+ lastFileContentHash=${this.lastFileContentHash},
+ typeIgnoreAll=${this.typeIgnoreAll},
+ imports=${this.imports?.length},
+ builtinsImport=${this.builtinsImport?.importName},
+ circularDependencies=${this.circularDependencies?.length},
+ parseDiagnostics=${this.parseDiagnostics?.length},
+ commentDiagnostics=${this.commentDiagnostics?.length},
+ bindDiagnostics=${this.bindDiagnostics?.length},
+ checkerDiagnostics=${this.checkerDiagnostics?.length},
+ taskListDiagnostics=${this.taskListDiagnostics?.length},
+ accumulatedDiagnostics=${this.accumulatedDiagnostics?.length},
+ typeIgnoreLines=${this.typeIgnoreLines?.size},
+ pyrightIgnoreLines=${this.pyrightIgnoreLines?.size},
+ checkTime=${this.checkTime},
+ clientDocumentContents=${this.clientDocumentContents?.length},
+ parseResults=${this.parserOutput?.parseTree.length},
+ semanticVersion=${this.semanticVersion}, `;
+    }
+}
+
+export interface SourceFileEditMode {
+    readonly isEditMode: boolean;
+}
+
 export class SourceFile {
     // Console interface to use for debugging.
     private _console: ConsoleInterface;
 
-    // File path unique to this file within the workspace. May not represent
+    // Uri unique to this file within the workspace. May not represent
     // a real file on disk.
-    private readonly _filePath: string;
+    private readonly _uri: Uri;
 
-    // File path on disk. May not be unique.
-    private readonly _realFilePath: string;
+    // A short string that is guaranteed to uniquely
+    // identify this file.
+    private readonly _fileId: string;
+
+    // Getter to lazily compute the module name from the file URI.
+    private _moduleNameGetter: (file: Uri) => string;
 
     // Period-delimited import path for the module.
-    private _moduleName: string;
+    private _cachedModuleName: string | undefined;
 
     // True if file is a type-hint (.pyi) file versus a python
     // (.py) file.
@@ -125,6 +233,10 @@ export class SourceFile {
     // special-case handling.
     private readonly _isTypingExtensionsStubFile: boolean;
 
+    // True if the file is the "_typeshed.pyi" file, which needs special-
+    // case handling.
+    private readonly _isTypeshedStubFile: boolean;
+
     // True if the file one of the other built-in stub files
     // that require special-case handling: "collections.pyi",
     // "dataclasses.pyi", "abc.pyi", "asyncio/coroutines.pyi".
@@ -134,121 +246,69 @@ export class SourceFile {
     // "py.typed" file.
     private readonly _isThirdPartyPyTypedPresent: boolean;
 
-    // True if the file appears to have been deleted.
-    private _isFileDeleted = false;
-
-    // Number that is incremented every time the diagnostics
-    // are updated.
-    private _diagnosticVersion = 0;
-
-    // Generation count of the file contents. When the contents
-    // change, this is incremented.
-    private _fileContentsVersion = 0;
-
-    // Length and hash of the file the last time it was read from disk.
-    private _lastFileContentLength: number | undefined = undefined;
-    private _lastFileContentHash: number | undefined = undefined;
-
-    // Client's version of the file. Undefined implies that contents
-    // need to be read from disk.
-    private _clientDocument: TextDocument | undefined;
-
-    // Version of file contents that have been analyzed.
-    private _analyzedFileContentsVersion = -1;
-
-    // Do we need to walk the parse tree and clean
-    // the binder information hanging from it?
-    private _parseTreeNeedsCleaning = false;
-
-    private _parseResults: ParseResults | undefined;
-    private _moduleSymbolTable: SymbolTable | undefined;
-    private _cachedIndexResults: IndexResults | undefined;
-
-    // Reentrancy check for binding.
-    private _isBindingInProgress = false;
-
-    // Diagnostics generated during different phases of analysis.
-    private _parseDiagnostics: Diagnostic[] = [];
-    private _commentDiagnostics: Diagnostic[] = [];
-    private _bindDiagnostics: Diagnostic[] = [];
-    private _checkerDiagnostics: Diagnostic[] = [];
-    private _typeIgnoreLines = new Map<number, IgnoreComment>();
-    private _typeIgnoreAll: IgnoreComment | undefined;
-    private _pyrightIgnoreLines = new Map<number, IgnoreComment>();
+    private readonly _editMode: SourceFileEditMode;
 
     // Settings that control which diagnostics should be output. The rules
     // are initialized to the basic set. They should be updated after the
     // the file is parsed.
     private _diagnosticRuleSet = getBasicDiagnosticRuleSet();
 
-    // Circular dependencies that have been reported in this file.
-    private _circularDependencies: CircularDependency[] = [];
-    private _noCircularDependencyConfirmed = false;
-
-    // Did we hit the maximum import depth?
-    private _hitMaxImportDepth: number | undefined;
-
-    // Do we need to perform a binding step?
-    private _isBindingNeeded = true;
-
-    // Do we have valid diagnostic results from a checking pass?
-    private _isCheckingNeeded = true;
-
-    // Time (in ms) that the last check() call required for this file.
-    private _checkTime: number | undefined;
-
-    // Do we need to perform an indexing step?
-    private _indexingNeeded = true;
-
     // Indicate whether this file is for ipython or not.
     private _ipythonMode = IPythonMode.None;
-
-    // Information about implicit and explicit imports from this file.
-    private _imports: ImportResult[] | undefined;
-    private _builtinsImport: ImportResult | undefined;
-    private _ipythonDisplayImport: ImportResult | undefined;
-
     private _logTracker: LogTracker;
+    private _preEditData: WriteableData | undefined;
+
+    // Data that changes when the source file changes.
+    private _writableData: WriteableData;
+
     readonly fileSystem: FileSystem;
 
     constructor(
-        fs: FileSystem,
-        filePath: string,
-        moduleName: string,
+        readonly serviceProvider: ServiceProvider,
+        uri: Uri,
+        moduleNameGetter: (file: Uri) => string,
         isThirdPartyImport: boolean,
         isThirdPartyPyTypedPresent: boolean,
+        editMode: SourceFileEditMode,
         console?: ConsoleInterface,
         logTracker?: LogTracker,
-        realFilePath?: string,
-        ipythonMode = IPythonMode.None
+        ipythonMode?: IPythonMode
     ) {
-        this.fileSystem = fs;
+        this.fileSystem = serviceProvider.get(ServiceKeys.fs);
         this._console = console || new StandardConsole();
-        this._filePath = filePath;
-        this._realFilePath = realFilePath ?? filePath;
-        this._moduleName = moduleName;
-        this._isStubFile = filePath.endsWith('.pyi');
+        this._writableData = new WriteableData();
+
+        this._editMode = editMode;
+        this._uri = uri;
+        this._fileId = this._makeFileId(uri);
+        this._moduleNameGetter = moduleNameGetter;
+        this._isStubFile = uri.hasExtension('.pyi');
         this._isThirdPartyImport = isThirdPartyImport;
         this._isThirdPartyPyTypedPresent = isThirdPartyPyTypedPresent;
-        const fileName = getFileName(filePath);
+        const fileName = uri.fileName;
         this._isTypingStubFile =
-            this._isStubFile &&
-            (this._filePath.endsWith(normalizeSlashes('stdlib/typing.pyi')) || fileName === 'typing_extensions.pyi');
+            this._isStubFile && (this._uri.pathEndsWith('stdlib/typing.pyi') || fileName === 'typing_extensions.pyi');
         this._isTypingExtensionsStubFile = this._isStubFile && fileName === 'typing_extensions.pyi';
+        this._isTypeshedStubFile =
+            this._isStubFile &&
+            (this._uri.pathEndsWith('stdlib/_typeshed/__init__.pyi') ||
+                this._uri.pathEndsWith('stdlib/_typeshed/_type_checker_internals.pyi'));
 
         this._isBuiltInStubFile = false;
         if (this._isStubFile) {
             if (
-                this._filePath.endsWith(normalizeSlashes('stdlib/collections/__init__.pyi')) ||
-                this._filePath.endsWith(normalizeSlashes('stdlib/asyncio/futures.pyi')) ||
-                this._filePath.endsWith(normalizeSlashes('stdlib/asyncio/tasks.pyi')) ||
-                this._filePath.endsWith(normalizeSlashes('stdlib/builtins.pyi')) ||
-                this._filePath.endsWith(normalizeSlashes('stdlib/_importlib_modulespec.pyi')) ||
-                this._filePath.endsWith(normalizeSlashes('stdlib/dataclasses.pyi')) ||
-                this._filePath.endsWith(normalizeSlashes('stdlib/abc.pyi')) ||
-                this._filePath.endsWith(normalizeSlashes('stdlib/enum.pyi')) ||
-                this._filePath.endsWith(normalizeSlashes('stdlib/queue.pyi')) ||
-                this._filePath.endsWith(normalizeSlashes('stdlib/types.pyi'))
+                this._uri.pathEndsWith('stdlib/collections/__init__.pyi') ||
+                this._uri.pathEndsWith('stdlib/asyncio/futures.pyi') ||
+                this._uri.pathEndsWith('stdlib/asyncio/tasks.pyi') ||
+                this._uri.pathEndsWith('stdlib/builtins.pyi') ||
+                this._uri.pathEndsWith('stdlib/_importlib_modulespec.pyi') ||
+                this._uri.pathEndsWith('stdlib/dataclasses.pyi') ||
+                this._uri.pathEndsWith('stdlib/abc.pyi') ||
+                this._uri.pathEndsWith('stdlib/enum.pyi') ||
+                this._uri.pathEndsWith('stdlib/queue.pyi') ||
+                this._uri.pathEndsWith('stdlib/string/templatelib.pyi') ||
+                this._uri.pathEndsWith('stdlib/types.pyi') ||
+                this._uri.pathEndsWith('stdlib/warnings.pyi')
             ) {
                 this._isBuiltInStubFile = true;
             }
@@ -256,35 +316,60 @@ export class SourceFile {
 
         // 'FG' or 'BG' based on current thread.
         this._logTracker = logTracker ?? new LogTracker(console, isMainThread ? 'FG' : 'BG');
-        this._ipythonMode = ipythonMode;
+        this._ipythonMode = ipythonMode ?? IPythonMode.None;
     }
 
-    getRealFilePath(): string {
-        return this._realFilePath;
+    // Sets the initial diagnostic rule set from the execution environment's
+    // config-level overrides. This should be called immediately after
+    // construction so the file has the correct rules before parse/bind.
+    setInitialDiagnosticRuleSet(ruleSet: DiagnosticRuleSet) {
+        this._diagnosticRuleSet = { ...ruleSet };
     }
 
     getIPythonMode(): IPythonMode {
         return this._ipythonMode;
     }
 
-    getFilePath(): string {
-        return this._filePath;
+    getUri(): Uri {
+        return this._uri;
     }
 
     getModuleName(): string {
-        return this._moduleName;
+        if (!this._cachedModuleName) {
+            // Call the module name getter. If it returns '' (which can happen if the file is not part
+            // of the project), fall back to the file name.)
+            return this._moduleNameGetter(this._uri) || stripFileExtension(this._uri.fileName);
+        }
+
+        return this._cachedModuleName;
     }
 
-    setModuleName(name: string) {
-        this._moduleName = name;
+    clearCachedModuleName() {
+        this._cachedModuleName = undefined;
     }
 
     getDiagnosticVersion(): number {
-        return this._diagnosticVersion;
+        return this._writableData.diagnosticVersion;
+    }
+
+    getParseDiagnostics(): Diagnostic[] {
+        return this._writableData.parseDiagnostics;
     }
 
     isStubFile() {
         return this._isStubFile;
+    }
+
+    isTypingStubFile() {
+        return this._isTypingStubFile;
+    }
+
+    isTypeshedStubFile() {
+        return this._isTypeshedStubFile;
+    }
+
+    isBuiltInStubFile() {
+        return this._isBuiltInStubFile;
     }
 
     isThirdPartyPyTypedPresent() {
@@ -295,9 +380,689 @@ export class SourceFile {
     // If the prevVersion is specified, the method returns undefined if
     // the diagnostics haven't changed.
     getDiagnostics(options: ConfigOptions, prevDiagnosticVersion?: number): Diagnostic[] | undefined {
-        if (this._diagnosticVersion === prevDiagnosticVersion) {
+        if (this._writableData.diagnosticVersion === prevDiagnosticVersion) {
             return undefined;
         }
+
+        return this._writableData.accumulatedDiagnostics;
+    }
+
+    getImports(): ImportResult[] {
+        return this._writableData.imports || [];
+    }
+
+    getBuiltinsImport(): ImportResult | undefined {
+        return this._writableData.builtinsImport;
+    }
+
+    getModuleSymbolTable(): SymbolTable | undefined {
+        return this._writableData.moduleSymbolTable;
+    }
+
+    getCheckTime() {
+        return this._writableData.checkTime;
+    }
+
+    restore(): string | undefined {
+        // If we had an edit, return our text.
+        if (this._preEditData) {
+            const text = this._writableData.clientDocumentContents!;
+            this._writableData = this._preEditData;
+            this._preEditData = undefined;
+
+            return text;
+        }
+
+        return undefined;
+    }
+
+    // Indicates whether the contents of the file have changed since
+    // the last analysis was performed.
+    didContentsChangeOnDisk(): boolean {
+        // If this is an open file any content changes will be
+        // provided through the editor. We can assume contents
+        // didn't change without us knowing about them.
+        if (this._writableData.clientDocumentContents) {
+            return false;
+        }
+
+        // If the file was never read previously we can't tell if the file has changed or not so
+        // we'll assume that it has. Otherwise, we may fail to analyze a file that was changed.
+        if (this._writableData.lastFileContentLength === undefined) {
+            return true;
+        }
+
+        // Read in the latest file contents and see if the hash matches
+        // that of the previous contents.
+        try {
+            // Read the file's contents.
+            if (this.fileSystem.existsSync(this._uri)) {
+                const fileContents = this.fileSystem.readFileSync(this._uri, 'utf8');
+
+                if (fileContents.length !== this._writableData.lastFileContentLength) {
+                    return true;
+                }
+
+                if (StringUtils.hashString(fileContents) !== this._writableData.lastFileContentHash) {
+                    return true;
+                }
+            } else {
+                // No longer exists, so yes it has changed.
+                return true;
+            }
+        } catch (error) {
+            return true;
+        }
+
+        return false;
+    }
+
+    // Drop parse and binding info to save memory. It is used
+    // in cases where memory is low. When info is needed, the file
+    // will be re-parsed and rebound.
+    dropParseAndBindInfo(): void {
+        // If we are actively binding or checking this file, we can't
+        // safely drop parse and binding info.
+        if (this._writableData.isBindingInProgress || this._writableData.isCheckingInProgress) {
+            return;
+        }
+
+        this._fireFileDirtyEvent();
+
+        this._writableData.parserOutput = undefined;
+        this._writableData.tokenizerLines = undefined;
+        this._writableData.tokenizerOutput = undefined;
+        this._writableData.parsedFileContents = undefined;
+        this._writableData.moduleSymbolTable = undefined;
+        this._writableData.isBindingNeeded = true;
+        this._writableData.imports = [];
+    }
+
+    stripForIndexing(): void {
+        this._writableData.moduleSymbolTable = undefined;
+        this._writableData.parseDiagnostics = [];
+        this._writableData.commentDiagnostics = [];
+        this._writableData.bindDiagnostics = [];
+        this._writableData.checkerDiagnostics = [];
+        this._writableData.taskListDiagnostics = [];
+        this._writableData.accumulatedDiagnostics = [];
+        this._writableData.circularDependencies = [];
+    }
+
+    markDirty(): void {
+        this._writableData.fileContentsVersion++;
+        this._writableData.semanticVersion++;
+        this._writableData.noCircularDependencyConfirmed = false;
+        this._writableData.isCheckingNeeded = true;
+        this._writableData.isBindingNeeded = true;
+        this._writableData.moduleSymbolTable = undefined;
+        this._writableData.lineCount = undefined;
+
+        this._fireFileDirtyEvent();
+    }
+
+    markReanalysisRequired(forceRebinding: boolean): void {
+        // Keep the parse info, but reset the analysis to the beginning.
+        this._writableData.semanticVersion++;
+        this._writableData.isCheckingNeeded = true;
+        this._writableData.noCircularDependencyConfirmed = false;
+
+        // If the file contains a wildcard import or __all__ symbols,
+        // we need to rebind because a dependent import may have changed.
+        if (this._writableData.parserOutput) {
+            if (
+                this._writableData.parserOutput.containsWildcardImport ||
+                AnalyzerNodeInfo.getDunderAllInfo(this._writableData.parserOutput.parseTree) !== undefined ||
+                forceRebinding
+            ) {
+                // We don't need to rebuild index data since wildcard
+                // won't affect user file indices. User file indices
+                // don't contain import alias info.
+                this._writableData.parseTreeNeedsCleaning = true;
+                this._writableData.isBindingNeeded = true;
+                this._writableData.moduleSymbolTable = undefined;
+            }
+        }
+    }
+
+    getFileContentsVersion() {
+        return this._writableData.fileContentsVersion;
+    }
+
+    getClientVersion() {
+        return this._writableData.clientDocumentVersion;
+    }
+
+    getSemanticVersion() {
+        return this._writableData.semanticVersion;
+    }
+
+    getRange() {
+        return { start: { line: 0, character: 0 }, end: { line: this._writableData.lineCount ?? 0, character: 0 } };
+    }
+
+    getOpenFileContents() {
+        return this._writableData.clientDocumentContents;
+    }
+
+    getFileContent(): string | undefined {
+        // Get current buffer content if the file is opened.
+        const openFileContent = this.getOpenFileContents();
+        if (openFileContent !== undefined) {
+            return openFileContent;
+        }
+
+        // Ensure that the content used here is identical to the content obtained from the parse results.
+        if (!this.isParseRequired() && this._writableData.parsedFileContents !== undefined) {
+            return this._writableData.parsedFileContents;
+        }
+
+        // Otherwise, get content from file system.
+        try {
+            // Check the file's length before attempting to read its full contents.
+            const fileStat = this.fileSystem.statSync(this._uri);
+            if (fileStat.size > maxSourceFileSize) {
+                this._console.error(
+                    `File length of "${this._uri}" is ${fileStat.size} ` +
+                        `which exceeds the maximum supported file size of ${maxSourceFileSize}`
+                );
+                throw new Error('File larger than max');
+            }
+
+            return this.fileSystem.readFileSync(this._uri, 'utf8');
+        } catch (error) {
+            return undefined;
+        }
+    }
+
+    setClientVersion(version: number | null, contents: string): void {
+        // Save pre edit state if in edit mode.
+        this._cachePreEditState();
+
+        if (version === null) {
+            this._writableData.clientDocumentVersion = undefined;
+            this._writableData.clientDocumentContents = undefined;
+
+            // Since the file is no longer open, dump the tokenizer output
+            // so it doesn't consume memory.
+            this._writableData.tokenizerOutput = undefined;
+        } else {
+            this._writableData.clientDocumentVersion = version;
+            this._writableData.clientDocumentContents = contents;
+
+            const contentsHash = StringUtils.hashString(contents);
+
+            // Have the contents of the file changed?
+            if (
+                contents.length !== this._writableData.lastFileContentLength ||
+                contentsHash !== this._writableData.lastFileContentHash
+            ) {
+                this.markDirty();
+            }
+
+            this._writableData.lastFileContentLength = contents.length;
+            this._writableData.lastFileContentHash = contentsHash;
+            this._writableData.isFileDeleted = false;
+        }
+    }
+
+    prepareForClose() {
+        this._fireFileDirtyEvent();
+    }
+
+    isFileDeleted() {
+        return this._writableData.isFileDeleted;
+    }
+
+    isParseRequired() {
+        return (
+            !this._writableData.parserOutput ||
+            this._writableData.analyzedFileContentsVersion !== this._writableData.fileContentsVersion
+        );
+    }
+
+    isBindingRequired() {
+        if (this._writableData.isBindingInProgress) {
+            return false;
+        }
+
+        if (this.isParseRequired()) {
+            return true;
+        }
+
+        return this._writableData.isBindingNeeded;
+    }
+
+    isCheckingRequired() {
+        return this._writableData.isCheckingNeeded;
+    }
+
+    getParseResults(): ParseFileResults | undefined {
+        if (this.isParseRequired()) {
+            return undefined;
+        }
+
+        assert(this._writableData.parserOutput !== undefined && this._writableData.parsedFileContents !== undefined);
+
+        // If we've cached the tokenizer output, use the cached version.
+        // Otherwise re-tokenize the contents on demand.
+        const tokenizeContents = this._tokenizeContents.bind(this);
+        const parsedFileContents = this._writableData.parsedFileContents;
+        const contentHash =
+            this._writableData.lastFileContentHash || StringUtils.hashString(this._writableData.parsedFileContents);
+        let tokenizerOutput: TokenizerOutput | undefined = this._writableData.tokenizerOutput;
+
+        return {
+            contentHash,
+            parserOutput: this._writableData.parserOutput,
+            get tokenizerOutput(): TokenizerOutput {
+                // Lazily tokenize the file contents only when accessed for the first time.
+                if (!tokenizerOutput) {
+                    tokenizerOutput = tokenizeContents(parsedFileContents, contentHash);
+                }
+                return tokenizerOutput!;
+            },
+            text: this._writableData.parsedFileContents,
+        };
+    }
+
+    getParserOutput(): ParserOutput | undefined {
+        if (this.isParseRequired()) {
+            return undefined;
+        }
+
+        assert(this._writableData.parserOutput !== undefined);
+
+        return this._writableData.parserOutput;
+    }
+
+    // Adds a new circular dependency for this file but only if
+    // it hasn't already been added.
+    addCircularDependency(configOptions: ConfigOptions, circDependency: CircularDependency) {
+        let updatedDependencyList = false;
+
+        // Some topologies can result in a massive number of cycles. We'll cut it off.
+        if (this._writableData.circularDependencies.length < _maxImportCyclesPerFile) {
+            if (!this._writableData.circularDependencies.some((dep) => dep.isEqual(circDependency))) {
+                this._writableData.circularDependencies.push(circDependency);
+                updatedDependencyList = true;
+            }
+        }
+
+        if (updatedDependencyList) {
+            this._recomputeDiagnostics(configOptions);
+        }
+    }
+
+    setNoCircularDependencyConfirmed() {
+        this._writableData.noCircularDependencyConfirmed = true;
+    }
+
+    isNoCircularDependencyConfirmed() {
+        return !this.isParseRequired() && this._writableData.noCircularDependencyConfirmed;
+    }
+
+    setHitMaxImportDepth(maxImportDepth: number) {
+        this._writableData.hitMaxImportDepth = maxImportDepth;
+    }
+
+    // Parse the file and update the state. Callers should wait for completion
+    // (or at least cancel) prior to calling again. It returns true if a parse
+    // was required and false if the parse information was up to date already.
+    parse(configOptions: ConfigOptions, importResolver: ImportResolver, content?: string): boolean {
+        return this._logTracker.log(`parsing: ${this._getPathForLogging(this._uri)}`, (logState) => {
+            // If the file is already parsed, we can skip.
+            if (!this.isParseRequired()) {
+                logState.suppress();
+                return false;
+            }
+
+            const diagSink = this.createDiagnosticSink();
+            let fileContents = this.getOpenFileContents();
+            if (fileContents === undefined) {
+                try {
+                    const startTime = timingStats.readFileTime.totalTime;
+                    timingStats.readFileTime.timeOperation(() => {
+                        // Read the file's contents.
+                        fileContents = content ?? this.getFileContent();
+                        if (fileContents === undefined) {
+                            throw new Error("Can't get file content");
+                        }
+
+                        // Remember the length and hash for comparison purposes.
+                        this._writableData.lastFileContentLength = fileContents.length;
+                        this._writableData.lastFileContentHash = StringUtils.hashString(fileContents);
+                    });
+                    logState.add(`fs read ${timingStats.readFileTime.totalTime - startTime}ms`);
+                } catch (error) {
+                    diagSink.addError(`Source file could not be read`, getEmptyRange());
+                    fileContents = '';
+
+                    if (!this.fileSystem.existsSync(this._uri)) {
+                        this._writableData.isFileDeleted = true;
+                    }
+                }
+            }
+
+            try {
+                // Parse the token stream, building the abstract syntax tree.
+                const parseFileResults = this._parseFile(
+                    configOptions,
+                    this._uri,
+                    fileContents!,
+                    this._ipythonMode !== IPythonMode.None,
+                    diagSink
+                );
+
+                assert(parseFileResults !== undefined && parseFileResults.tokenizerOutput !== undefined);
+                this._writableData.parserOutput = parseFileResults.parserOutput;
+                this._writableData.tokenizerLines = parseFileResults.tokenizerOutput.lines;
+                this._writableData.parsedFileContents = fileContents;
+                this._writableData.typeIgnoreLines = parseFileResults.tokenizerOutput.typeIgnoreLines;
+                this._writableData.typeIgnoreAll = parseFileResults.tokenizerOutput.typeIgnoreAll;
+                this._writableData.pyrightIgnoreLines = parseFileResults.tokenizerOutput.pyrightIgnoreLines;
+                this._writableData.lineCount = parseFileResults.tokenizerOutput.lines.length;
+
+                this._writableData.tokenizerOutput = parseFileResults.tokenizerOutput;
+
+                // Resolve imports.
+                const execEnvironment = configOptions.findExecEnvironment(this._uri);
+                timingStats.resolveImportsTime.timeOperation(() => {
+                    const importResult = this._resolveImports(
+                        importResolver,
+                        parseFileResults.parserOutput.importedModules,
+                        execEnvironment
+                    );
+
+                    this._writableData.imports = importResult.imports;
+                    this._writableData.builtinsImport = importResult.builtinsImportResult;
+
+                    this._writableData.parseDiagnostics = diagSink.fetchAndClear();
+
+                    this._writableData.taskListDiagnostics = [];
+                    this._addTaskListDiagnostics(
+                        configOptions.taskListTokens,
+                        parseFileResults.tokenizerOutput,
+                        this._writableData.taskListDiagnostics
+                    );
+                });
+
+                // Is this file in a "strict" path?
+                const useStrict =
+                    configOptions.strict.find((strictFileSpec) => this._uri.matchesRegex(strictFileSpec.regExp)) !==
+                    undefined;
+
+                const commentDiags: CommentUtils.CommentDiagnostic[] = [];
+                this._diagnosticRuleSet = CommentUtils.getFileLevelDirectives(
+                    parseFileResults.tokenizerOutput.tokens,
+                    parseFileResults.tokenizerOutput.lines,
+                    execEnvironment.diagnosticRuleSet,
+                    useStrict,
+                    commentDiags
+                );
+
+                this._writableData.commentDiagnostics = [];
+
+                commentDiags.forEach((commentDiag) => {
+                    this._writableData.commentDiagnostics.push(
+                        new Diagnostic(
+                            DiagnosticCategory.Error,
+                            commentDiag.message,
+                            convertTextRangeToRange(commentDiag.range, parseFileResults.tokenizerOutput.lines)
+                        )
+                    );
+                });
+            } catch (e: any) {
+                const message: string =
+                    (e.stack ? e.stack.toString() : undefined) ||
+                    (typeof e.message === 'string' ? e.message : undefined) ||
+                    JSON.stringify(e);
+                this._console.error(
+                    LocMessage.internalParseError().format({
+                        file: this.getUri().toUserVisibleString(),
+                        message,
+                    })
+                );
+
+                // Create dummy parse results.
+                this._writableData.parsedFileContents = '';
+                this._writableData.tokenizerLines = new TextRangeCollection<TextRange>([]);
+
+                this._writableData.parserOutput = {
+                    parseTree: ModuleNode.create({ start: 0, length: 0 }),
+                    importedModules: [],
+                    futureImports: new Set<string>(),
+                    containsWildcardImport: false,
+                    typingSymbolAliases: new Map<string, string>(),
+                    hasTypeAnnotations: false,
+                    lines: this._writableData.tokenizerLines,
+                };
+
+                this._writableData.tokenizerOutput = {
+                    tokens: new TextRangeCollection<Token>([]),
+                    lines: this._writableData.tokenizerLines,
+                    typeIgnoreAll: undefined,
+                    typeIgnoreLines: new Map<number, IgnoreComment>(),
+                    pyrightIgnoreLines: new Map<number, IgnoreComment>(),
+                    predominantEndOfLineSequence: '\n',
+                    hasPredominantTabSequence: false,
+                    predominantTabSequence: '    ',
+                    predominantSingleQuoteCharacter: "'",
+                };
+
+                this._writableData.imports = undefined;
+                this._writableData.builtinsImport = undefined;
+
+                const diagSink = this.createDiagnosticSink();
+                diagSink.addError(
+                    LocMessage.internalParseError().format({
+                        file: this.getUri().toUserVisibleString(),
+                        message,
+                    }),
+                    getEmptyRange()
+                );
+                this._writableData.parseDiagnostics = diagSink.fetchAndClear();
+                this._writableData.taskListDiagnostics = diagSink.fetchAndClear();
+
+                // Do not rethrow the exception, swallow it here. Callers are not
+                // prepared to handle an exception.
+            }
+
+            this._writableData.analyzedFileContentsVersion = this._writableData.fileContentsVersion;
+            this._writableData.isBindingNeeded = true;
+            this._writableData.isCheckingNeeded = true;
+            this._writableData.parseTreeNeedsCleaning = false;
+            this._writableData.hitMaxImportDepth = undefined;
+
+            this._recomputeDiagnostics(configOptions);
+
+            return true;
+        });
+    }
+
+    bind(
+        configOptions: ConfigOptions,
+        importLookup: ImportLookup,
+        builtinsScope: Scope | undefined,
+        futureImports: Set<string>
+    ) {
+        assert(!this.isParseRequired(), 'Bind called before parsing');
+        assert(this.isBindingRequired(), 'Bind called unnecessarily');
+        assert(!this._writableData.isBindingInProgress, 'Bind called while binding in progress');
+        assert(this._writableData.parserOutput !== undefined, 'Parse results not available');
+
+        return this._logTracker.log(`binding: ${this._getPathForLogging(this._uri)}`, () => {
+            try {
+                // Perform name binding.
+                timingStats.bindTime.timeOperation(() => {
+                    this._cleanParseTreeIfRequired();
+
+                    const fileInfo = this._buildFileInfo(configOptions, importLookup, builtinsScope, futureImports);
+                    AnalyzerNodeInfo.setFileInfo(this._writableData.parserOutput!.parseTree, fileInfo);
+
+                    const binder = new Binder(fileInfo, configOptions.indexGenerationMode);
+                    this._writableData.isBindingInProgress = true;
+                    binder.bindModule(this._writableData.parserOutput!.parseTree);
+
+                    // If we're in "test mode" (used for unit testing), run an additional
+                    // "test walker" over the parse tree to validate its internal consistency.
+                    if (configOptions.internalTestMode) {
+                        const testWalker = new TestWalker();
+                        testWalker.walk(this._writableData.parserOutput!.parseTree);
+                    }
+
+                    this._writableData.bindDiagnostics = fileInfo.diagnosticSink.fetchAndClear();
+                    const moduleScope = AnalyzerNodeInfo.getScope(this._writableData.parserOutput!.parseTree);
+                    assert(moduleScope !== undefined, 'Module scope not returned by binder');
+                    this._writableData.moduleSymbolTable = moduleScope!.symbolTable;
+                });
+            } catch (e: any) {
+                const message: string =
+                    (e.stack ? e.stack.toString() : undefined) ||
+                    (typeof e.message === 'string' ? e.message : undefined) ||
+                    JSON.stringify(e);
+                this._console.error(
+                    LocMessage.internalBindError().format({
+                        file: this.getUri().toUserVisibleString(),
+                        message,
+                    })
+                );
+
+                const diagSink = this.createDiagnosticSink();
+                diagSink.addError(
+                    LocMessage.internalBindError().format({
+                        file: this.getUri().toUserVisibleString(),
+                        message,
+                    }),
+                    getEmptyRange()
+                );
+                this._writableData.bindDiagnostics = diagSink.fetchAndClear();
+
+                // Do not rethrow the exception, swallow it here. Callers are not
+                // prepared to handle an exception.
+            } finally {
+                this._writableData.isBindingInProgress = false;
+            }
+
+            // Prepare for the next stage of the analysis.
+            this._writableData.isCheckingNeeded = true;
+            this._writableData.isBindingNeeded = false;
+
+            this._recomputeDiagnostics(configOptions);
+        });
+    }
+
+    check(
+        configOptions: ConfigOptions,
+        importLookup: ImportLookup,
+        importResolver: ImportResolver,
+        evaluator: TypeEvaluator,
+        dependentFiles?: ParserOutput[]
+    ) {
+        assert(!this.isParseRequired(), `Check called before parsing: state=${this._writableData.debugPrint()}`);
+        assert(!this.isBindingRequired(), `Check called before binding: state=${this._writableData.debugPrint()}`);
+        assert(!this._writableData.isBindingInProgress, 'Check called while binding in progress');
+        assert(!this._writableData.isCheckingInProgress, 'Check called while checking in progress');
+        assert(this.isCheckingRequired(), 'Check called unnecessarily');
+        assert(this._writableData.parserOutput !== undefined, 'Parse results not available');
+
+        return this._logTracker.log(`checking: ${this._getPathForLogging(this._uri)}`, () => {
+            try {
+                timingStats.typeCheckerTime.timeOperation(() => {
+                    const checkDuration = new Duration();
+                    const checker = new Checker(
+                        importResolver,
+                        evaluator,
+                        this._writableData.parserOutput!,
+                        dependentFiles
+                    );
+                    this._writableData.isCheckingInProgress = true;
+                    checker.check();
+                    this._writableData.isCheckingNeeded = false;
+
+                    const fileInfo = AnalyzerNodeInfo.getFileInfo(this._writableData.parserOutput!.parseTree)!;
+                    this._writableData.checkerDiagnostics = fileInfo.diagnosticSink.fetchAndClear();
+                    this._writableData.checkTime = checkDuration.getDurationInMilliseconds();
+                });
+            } catch (e: any) {
+                const isCancellation = OperationCanceledException.is(e);
+                if (!isCancellation) {
+                    const message: string =
+                        (e.stack ? e.stack.toString() : undefined) ||
+                        (typeof e.message === 'string' ? e.message : undefined) ||
+                        JSON.stringify(e);
+                    this._console.error(
+                        LocMessage.internalTypeCheckingError().format({
+                            file: this.getUri().toUserVisibleString(),
+                            message,
+                        })
+                    );
+                    const diagSink = this.createDiagnosticSink();
+                    diagSink.addError(
+                        LocMessage.internalTypeCheckingError().format({
+                            file: this.getUri().toUserVisibleString(),
+                            message,
+                        }),
+                        getEmptyRange()
+                    );
+
+                    this._writableData.checkerDiagnostics = diagSink.fetchAndClear();
+
+                    // Mark the file as complete so we don't get into an infinite loop.
+                    this._writableData.isCheckingNeeded = false;
+                }
+
+                throw e;
+            } finally {
+                this._writableData.isCheckingInProgress = false;
+
+                // Clear any circular dependencies associated with this file.
+                // These will be detected by the program module and associated
+                // with the source file right before it is finalized.
+                this._writableData.circularDependencies = [];
+
+                this._recomputeDiagnostics(configOptions);
+            }
+        });
+    }
+
+    test_enableIPythonMode(enable: boolean) {
+        this._ipythonMode = enable ? IPythonMode.CellDocs : IPythonMode.None;
+    }
+
+    protected createDiagnosticSink(): DiagnosticSink {
+        return new DiagnosticSink();
+    }
+
+    protected createTextRangeDiagnosticSink(lines: TextRangeCollection<TextRange>): TextRangeDiagnosticSink {
+        return new TextRangeDiagnosticSink(lines);
+    }
+
+    // Creates a short string that can be used to uniquely identify
+    // this file from all other files. It is used in the type evaluator
+    // to distinguish between types that are defined in different files
+    // or scopes.
+    private _makeFileId(uri: Uri) {
+        const maxNameLength = 8;
+
+        // Use a small portion of the file name to help with debugging.
+        let fileName = uri.fileNameWithoutExtensions;
+        if (fileName.length > maxNameLength) {
+            fileName = fileName.substring(fileName.length - maxNameLength);
+        }
+
+        // Append a number to guarantee uniqueness.
+        const uniqueNumber = nextUniqueFileId++;
+
+        // Use a "/" to separate the two components, since this
+        // character will never appear in a file name.
+        return `${fileName}/${uniqueNumber.toString()}`;
+    }
+
+    // Computes an updated set of accumulated diagnostics for the file
+    // based on the partial diagnostics from various analysis stages.
+    private _recomputeDiagnostics(configOptions: ConfigOptions) {
+        this._writableData.diagnosticVersion++;
 
         let includeWarningsAndErrors = true;
 
@@ -307,19 +1072,20 @@ export class SourceFile {
             includeWarningsAndErrors = false;
         }
 
-        let diagList = [
-            ...this._parseDiagnostics,
-            ...this._commentDiagnostics,
-            ...this._bindDiagnostics,
-            ...this._checkerDiagnostics,
-        ];
+        let diagList: Diagnostic[] = [];
+        appendArray(diagList, this._writableData.parseDiagnostics);
+        appendArray(diagList, this._writableData.commentDiagnostics);
+        appendArray(diagList, this._writableData.bindDiagnostics);
+        appendArray(diagList, this._writableData.checkerDiagnostics);
+        appendArray(diagList, this._writableData.taskListDiagnostics);
+
         const prefilteredDiagList = diagList;
-        const typeIgnoreLinesClone = new Map(this._typeIgnoreLines);
-        const pyrightIgnoreLinesClone = new Map(this._pyrightIgnoreLines);
+        const typeIgnoreLinesClone = new Map(this._writableData.typeIgnoreLines);
+        const pyrightIgnoreLinesClone = new Map(this._writableData.pyrightIgnoreLines);
 
         // Filter the diagnostics based on "type: ignore" lines.
         if (this._diagnosticRuleSet.enableTypeIgnoreComments) {
-            if (this._typeIgnoreLines.size > 0) {
+            if (this._writableData.typeIgnoreLines.size > 0) {
                 diagList = diagList.filter((d) => {
                     if (
                         d.category !== DiagnosticCategory.UnusedCode &&
@@ -327,7 +1093,7 @@ export class SourceFile {
                         d.category !== DiagnosticCategory.Deprecated
                     ) {
                         for (let line = d.range.start.line; line <= d.range.end.line; line++) {
-                            if (this._typeIgnoreLines.has(line)) {
+                            if (this._writableData.typeIgnoreLines.has(line)) {
                                 typeIgnoreLinesClone.delete(line);
                                 return false;
                             }
@@ -340,11 +1106,15 @@ export class SourceFile {
         }
 
         // Filter the diagnostics based on "pyright: ignore" lines.
-        if (this._pyrightIgnoreLines.size > 0) {
+        if (this._writableData.pyrightIgnoreLines.size > 0) {
             diagList = diagList.filter((d) => {
-                if (d.category !== DiagnosticCategory.UnreachableCode && d.category !== DiagnosticCategory.Deprecated) {
+                if (
+                    d.category !== DiagnosticCategory.UnusedCode &&
+                    d.category !== DiagnosticCategory.UnreachableCode &&
+                    d.category !== DiagnosticCategory.Deprecated
+                ) {
                     for (let line = d.range.start.line; line <= d.range.end.line; line++) {
-                        const pyrightIgnoreComment = this._pyrightIgnoreLines.get(line);
+                        const pyrightIgnoreComment = this._writableData.pyrightIgnoreLines.get(line);
                         if (pyrightIgnoreComment) {
                             if (!pyrightIgnoreComment.rulesList) {
                                 pyrightIgnoreLinesClone.delete(line);
@@ -390,7 +1160,13 @@ export class SourceFile {
 
         const unnecessaryTypeIgnoreDiags: Diagnostic[] = [];
 
-        if (this._diagnosticRuleSet.reportUnnecessaryTypeIgnoreComment !== 'none') {
+        // Skip this step if type checking is needed. Otherwise we'll likely produce
+        // incorrect (false positive) reportUnnecessaryTypeIgnoreComment diagnostics
+        // until checking is performed on this file.
+        if (
+            this._diagnosticRuleSet.reportUnnecessaryTypeIgnoreComment !== 'none' &&
+            !this._writableData.isCheckingNeeded
+        ) {
             const diagCategory = convertLevelToCategory(this._diagnosticRuleSet.reportUnnecessaryTypeIgnoreComment);
 
             const prefilteredErrorList = prefilteredDiagList.filter(
@@ -409,51 +1185,43 @@ export class SourceFile {
                 );
             };
 
-            if (prefilteredErrorList.length === 0 && this._typeIgnoreAll !== undefined) {
-                const rangeStart = this._typeIgnoreAll.range.start;
-                const rangeEnd = rangeStart + this._typeIgnoreAll.range.length;
-                const range = convertOffsetsToRange(rangeStart, rangeEnd, this._parseResults!.tokenizerOutput.lines!);
+            if (prefilteredErrorList.length === 0 && this._writableData.typeIgnoreAll !== undefined) {
+                const rangeStart = this._writableData.typeIgnoreAll.range.start;
+                const rangeEnd = rangeStart + this._writableData.typeIgnoreAll.range.length;
+                const range = convertOffsetsToRange(rangeStart, rangeEnd, this._writableData.tokenizerLines!);
 
                 if (!isUnreachableCodeRange(range) && this._diagnosticRuleSet.enableTypeIgnoreComments) {
-                    unnecessaryTypeIgnoreDiags.push(
-                        new Diagnostic(diagCategory, Localizer.Diagnostic.unnecessaryTypeIgnore(), range)
-                    );
+                    const diag = new Diagnostic(diagCategory, LocMessage.unnecessaryTypeIgnore(), range);
+                    diag.setRule(DiagnosticRule.reportUnnecessaryTypeIgnoreComment);
+                    unnecessaryTypeIgnoreDiags.push(diag);
                 }
             }
 
             typeIgnoreLinesClone.forEach((ignoreComment) => {
-                if (this._parseResults?.tokenizerOutput.lines) {
+                if (this._writableData.tokenizerLines!) {
                     const rangeStart = ignoreComment.range.start;
                     const rangeEnd = rangeStart + ignoreComment.range.length;
-                    const range = convertOffsetsToRange(
-                        rangeStart,
-                        rangeEnd,
-                        this._parseResults!.tokenizerOutput.lines!
-                    );
+                    const range = convertOffsetsToRange(rangeStart, rangeEnd, this._writableData.tokenizerLines!);
 
                     if (!isUnreachableCodeRange(range) && this._diagnosticRuleSet.enableTypeIgnoreComments) {
-                        unnecessaryTypeIgnoreDiags.push(
-                            new Diagnostic(diagCategory, Localizer.Diagnostic.unnecessaryTypeIgnore(), range)
-                        );
+                        const diag = new Diagnostic(diagCategory, LocMessage.unnecessaryTypeIgnore(), range);
+                        diag.setRule(DiagnosticRule.reportUnnecessaryTypeIgnoreComment);
+                        unnecessaryTypeIgnoreDiags.push(diag);
                     }
                 }
             });
 
             pyrightIgnoreLinesClone.forEach((ignoreComment) => {
-                if (this._parseResults?.tokenizerOutput.lines) {
+                if (this._writableData.tokenizerLines!) {
                     if (!ignoreComment.rulesList) {
                         const rangeStart = ignoreComment.range.start;
                         const rangeEnd = rangeStart + ignoreComment.range.length;
-                        const range = convertOffsetsToRange(
-                            rangeStart,
-                            rangeEnd,
-                            this._parseResults!.tokenizerOutput.lines!
-                        );
+                        const range = convertOffsetsToRange(rangeStart, rangeEnd, this._writableData.tokenizerLines!);
 
                         if (!isUnreachableCodeRange(range)) {
-                            unnecessaryTypeIgnoreDiags.push(
-                                new Diagnostic(diagCategory, Localizer.Diagnostic.unnecessaryPyrightIgnore(), range)
-                            );
+                            const diag = new Diagnostic(diagCategory, LocMessage.unnecessaryTypeIgnore(), range);
+                            diag.setRule(DiagnosticRule.reportUnnecessaryTypeIgnoreComment);
+                            unnecessaryTypeIgnoreDiags.push(diag);
                         }
                     } else {
                         ignoreComment.rulesList.forEach((unusedRule) => {
@@ -462,19 +1230,19 @@ export class SourceFile {
                             const range = convertOffsetsToRange(
                                 rangeStart,
                                 rangeEnd,
-                                this._parseResults!.tokenizerOutput.lines!
+                                this._writableData.tokenizerLines!
                             );
 
                             if (!isUnreachableCodeRange(range)) {
-                                unnecessaryTypeIgnoreDiags.push(
-                                    new Diagnostic(
-                                        diagCategory,
-                                        Localizer.Diagnostic.unnecessaryPyrightIgnoreRule().format({
-                                            name: unusedRule.text,
-                                        }),
-                                        range
-                                    )
+                                const diag = new Diagnostic(
+                                    diagCategory,
+                                    LocMessage.unnecessaryPyrightIgnoreRule().format({
+                                        name: unusedRule.text,
+                                    }),
+                                    range
                                 );
+                                diag.setRule(DiagnosticRule.reportUnnecessaryTypeIgnoreComment);
+                                unnecessaryTypeIgnoreDiags.push(diag);
                             }
                         });
                     }
@@ -482,17 +1250,20 @@ export class SourceFile {
             });
         }
 
-        if (this._diagnosticRuleSet.reportImportCycles !== 'none' && this._circularDependencies.length > 0) {
+        if (
+            this._diagnosticRuleSet.reportImportCycles !== 'none' &&
+            this._writableData.circularDependencies.length > 0
+        ) {
             const category = convertLevelToCategory(this._diagnosticRuleSet.reportImportCycles);
 
-            this._circularDependencies.forEach((cirDep) => {
+            this._writableData.circularDependencies.forEach((cirDep) => {
                 const diag = new Diagnostic(
                     category,
-                    Localizer.Diagnostic.importCycleDetected() +
+                    LocMessage.importCycleDetected() +
                         '\n' +
                         cirDep
                             .getPaths()
-                            .map((path) => '  ' + path)
+                            .map((path) => '  ' + path.toUserVisibleString())
                             .join('\n'),
                     getEmptyRange()
                 );
@@ -501,28 +1272,20 @@ export class SourceFile {
             });
         }
 
-        if (this._hitMaxImportDepth !== undefined) {
+        if (this._writableData.hitMaxImportDepth !== undefined) {
             diagList.push(
                 new Diagnostic(
                     DiagnosticCategory.Error,
-                    Localizer.Diagnostic.importDepthExceeded().format({ depth: this._hitMaxImportDepth }),
+                    LocMessage.importDepthExceeded().format({ depth: this._writableData.hitMaxImportDepth }),
                     getEmptyRange()
                 )
             );
         }
 
-        // add diagnostics for comments that match the task list tokens
-        this._addTaskListDiagnostics(options.taskListTokens, diagList);
-
-        // If the file is in the ignore list, clear the diagnostic list.
-        if (options.ignore.find((ignoreFileSpec) => ignoreFileSpec.regExp.test(this._realFilePath))) {
-            diagList = [];
-        }
-
         // If there is a "type: ignore" comment at the top of the file, clear
         // the diagnostic list of all error, warning, and information diagnostics.
         if (this._diagnosticRuleSet.enableTypeIgnoreComments) {
-            if (this._typeIgnoreAll !== undefined) {
+            if (this._writableData.typeIgnoreAll !== undefined) {
                 diagList = diagList.filter(
                     (diag) =>
                         diag.category !== DiagnosticCategory.Error &&
@@ -547,27 +1310,42 @@ export class SourceFile {
             );
         }
 
-        return diagList;
+        // If the file is in the ignore list, clear the diagnostic list.
+        if (configOptions.ignore.find((ignoreFileSpec) => this._uri.matchesRegex(ignoreFileSpec.regExp))) {
+            diagList = [];
+        }
+
+        this._writableData.accumulatedDiagnostics = diagList;
+    }
+
+    private _cachePreEditState() {
+        // If this is our first write, then make a copy of the writable data.
+        if (!this._editMode.isEditMode || this._preEditData) {
+            return;
+        }
+
+        // Copy over the writable data.
+        this._preEditData = this._writableData;
+
+        // Recreate all the writable data from scratch.
+        this._writableData = new WriteableData();
     }
 
     // Get all task list diagnostics for the current file and add them
-    // to the specified diagnostic list
-    private _addTaskListDiagnostics(taskListTokens: TaskListToken[] | undefined, diagList: Diagnostic[]) {
-        // input validation
+    // to the specified diagnostic list.
+    private _addTaskListDiagnostics(
+        taskListTokens: TaskListToken[] | undefined,
+        tokenizerOutput: TokenizerOutput,
+        diagList: Diagnostic[]
+    ) {
         if (!taskListTokens || taskListTokens.length === 0 || !diagList) {
             return;
         }
 
-        // if we have no tokens, we're done
-        if (!this._parseResults?.tokenizerOutput?.tokens) {
-            return;
-        }
-
-        const tokenizerOutput = this._parseResults.tokenizerOutput;
         for (let i = 0; i < tokenizerOutput.tokens.count; i++) {
             const token = tokenizerOutput.tokens.getItemAt(i);
 
-            // if there are no comments, skip this token
+            // If there are no comments, skip this token.
             if (!token.comments || token.comments.length === 0) {
                 continue;
             }
@@ -581,25 +1359,26 @@ export class SourceFile {
                     const regexStr = '^[\\s]*' + token.text + '([\\s]*$|[\\W]+)';
                     const regex = RegExp(regexStr, 'i'); // case insensitive
 
-                    // if the comment doesn't match, skip it
+                    // If the comment doesn't match, skip it.
                     if (!regex.test(comment.value)) {
                         continue;
                     }
 
-                    // Calculate the range for the diagnostic
-                    // This allows navigation to the comment via double clicking the item in the task list pane
+                    // Calculate the range for the diagnostic. This allows navigation
+                    // to the comment via double clicking the item in the task list pane.
                     let rangeStart = comment.start;
 
-                    // The comment technically starts right after the comment identifier (#), but we want the caret right
-                    // before the task list token (since there might be whitespace before it)
+                    // The comment technically starts right after the comment identifier(#),
+                    // but we want the caret right before the task list token (since there
+                    // might be whitespace before it).
                     const indexOfToken = comment.value.toLowerCase().indexOf(token.text.toLowerCase());
                     rangeStart += indexOfToken;
 
                     const rangeEnd = TextRange.getEnd(comment);
                     const range = convertOffsetsToRange(rangeStart, rangeEnd, tokenizerOutput.lines!);
 
-                    // Add the diagnostic to the list to send to VS,
-                    // and trim whitespace from the comment so it's easier to read in the task list
+                    // Add the diagnostic to the list and trim whitespace from the comment so
+                    // it's easier to read in the task list.
                     diagList.push(
                         new Diagnostic(DiagnosticCategory.TaskItem, comment.value.trim(), range, token.priority)
                     );
@@ -608,870 +1387,32 @@ export class SourceFile {
         }
     }
 
-    getImports(): ImportResult[] {
-        return this._imports || [];
-    }
-
-    getBuiltinsImport(): ImportResult | undefined {
-        return this._builtinsImport;
-    }
-
-    getIPythonDisplayImport(): ImportResult | undefined {
-        return this._ipythonDisplayImport;
-    }
-
-    getModuleSymbolTable(): SymbolTable | undefined {
-        return this._moduleSymbolTable;
-    }
-
-    getCheckTime() {
-        return this._checkTime;
-    }
-
-    // Indicates whether the contents of the file have changed since
-    // the last analysis was performed.
-    didContentsChangeOnDisk(): boolean {
-        // If this is an open file any content changes will be
-        // provided through the editor. We can assume contents
-        // didn't change without us knowing about them.
-        if (this._clientDocument) {
-            return false;
-        }
-
-        // If the file was never read previously, no need to check for a change.
-        if (this._lastFileContentLength === undefined) {
-            return false;
-        }
-
-        // Read in the latest file contents and see if the hash matches
-        // that of the previous contents.
-        try {
-            // Read the file's contents.
-            const fileContents = this.fileSystem.readFileSync(this._filePath, 'utf8');
-
-            if (fileContents.length !== this._lastFileContentLength) {
-                return true;
-            }
-
-            if (StringUtils.hashString(fileContents) !== this._lastFileContentHash) {
-                return true;
-            }
-        } catch (error) {
-            return true;
-        }
-
-        return false;
-    }
-
-    // Drop parse and binding info to save memory. It is used
-    // in cases where memory is low. When info is needed, the file
-    // will be re-parsed and rebound.
-    dropParseAndBindInfo(): void {
-        if (true) {
-          return
-        }
-
-        this._parseResults = undefined;
-        this._moduleSymbolTable = undefined;
-        this._isBindingNeeded = true;
-    }
-
-    markDirty(indexingNeeded = true): void {
-        this._fileContentsVersion++;
-        this._noCircularDependencyConfirmed = false;
-        this._isCheckingNeeded = true;
-        this._isBindingNeeded = true;
-        this._indexingNeeded = indexingNeeded;
-        this._moduleSymbolTable = undefined;
-        this._cachedIndexResults = undefined;
-        const filePath = this.getFilePath();
-        Extensions.getProgramExtensions(filePath).forEach((e) => (e.fileDirty ? e.fileDirty(filePath) : null));
-    }
-
-    markReanalysisRequired(forceRebinding: boolean): void {
-        // Keep the parse info, but reset the analysis to the beginning.
-        this._isCheckingNeeded = true;
-        this._noCircularDependencyConfirmed = false;
-
-        // If the file contains a wildcard import or __all__ symbols,
-        // we need to rebind because a dependent import may have changed.
-        if (this._parseResults) {
-            if (
-                this._parseResults.containsWildcardImport ||
-                AnalyzerNodeInfo.getDunderAllInfo(this._parseResults.parseTree) !== undefined ||
-                forceRebinding
-            ) {
-                // We don't need to rebuild index data since wildcard
-                // won't affect user file indices. User file indices
-                // don't contain import alias info.
-                this._parseTreeNeedsCleaning = true;
-                this._isBindingNeeded = true;
-                this._moduleSymbolTable = undefined;
-            }
-        }
-    }
-
-    getClientVersion() {
-        return this._clientDocument?.version;
-    }
-
-    getOpenFileContents() {
-        return this._clientDocument?.getText();
-    }
-
-    getFileContent(): string | undefined {
-        // Get current buffer content if the file is opened.
-        const openFileContent = this.getOpenFileContents();
-        if (openFileContent !== undefined) {
-            return openFileContent;
-        }
-
-        // Otherwise, get content from file system.
-        try {
-            // Check the file's length before attempting to read its full contents.
-            const fileStat = this.fileSystem.statSync(this._filePath);
-            if (fileStat.size > _maxSourceFileSize) {
-                this._console.error(
-                    `File length of "${this._filePath}" is ${fileStat.size} ` +
-                        `which exceeds the maximum supported file size of ${_maxSourceFileSize}`
-                );
-                throw new Error('File larger than max');
-            }
-
-            return this.fileSystem.readFileSync(this._filePath, 'utf8');
-        } catch (error) {
-            return undefined;
-        }
-    }
-
-    setClientVersion(version: number | null, contents: TextDocumentContentChangeEvent[]): void {
-        if (version === null) {
-            this._clientDocument = undefined;
-        } else {
-            if (!this._clientDocument) {
-                this._clientDocument = TextDocument.create(this._filePath, 'python', version, '');
-            }
-            this._clientDocument = TextDocument.update(this._clientDocument, contents, version);
-
-            const fileContents = this._clientDocument.getText();
-            const contentsHash = StringUtils.hashString(fileContents);
-
-            // Have the contents of the file changed?
-            if (fileContents.length !== this._lastFileContentLength || contentsHash !== this._lastFileContentHash) {
-                this.markDirty();
-            }
-
-            this._lastFileContentLength = fileContents.length;
-            this._lastFileContentHash = contentsHash;
-            this._isFileDeleted = false;
-        }
-    }
-
-    prepareForClose() {
-        // Nothing to do currently.
-    }
-
-    isFileDeleted() {
-        return this._isFileDeleted;
-    }
-
-    isParseRequired() {
-        return !this._parseResults || this._analyzedFileContentsVersion !== this._fileContentsVersion;
-    }
-
-    isBindingRequired() {
-        if (this._isBindingInProgress) {
-            return false;
-        }
-
-        if (this.isParseRequired()) {
-            return true;
-        }
-
-        return this._isBindingNeeded;
-    }
-
-    isIndexingRequired() {
-        return this._indexingNeeded;
-    }
-
-    isCheckingRequired() {
-        return this._isCheckingNeeded;
-    }
-
-    getParseResults(): ParseResults | undefined {
-        if (!this.isParseRequired()) {
-            return this._parseResults;
-        }
-
-        return undefined;
-    }
-
-    getCachedIndexResults(): IndexResults | undefined {
-        return this._cachedIndexResults;
-    }
-
-    cacheIndexResults(indexResults: IndexResults) {
-        this._cachedIndexResults = indexResults;
-    }
-
-    // Adds a new circular dependency for this file but only if
-    // it hasn't already been added.
-    addCircularDependency(circDependency: CircularDependency) {
-        let updatedDependencyList = false;
-
-        // Some topologies can result in a massive number of cycles. We'll cut it off.
-        if (this._circularDependencies.length < _maxImportCyclesPerFile) {
-            if (!this._circularDependencies.some((dep) => dep.isEqual(circDependency))) {
-                this._circularDependencies.push(circDependency);
-                updatedDependencyList = true;
-            }
-        }
-
-        if (updatedDependencyList) {
-            this._diagnosticVersion++;
-        }
-    }
-
-    setNoCircularDependencyConfirmed() {
-        this._noCircularDependencyConfirmed = true;
-    }
-
-    isNoCircularDependencyConfirmed() {
-        return !this.isParseRequired() && this._noCircularDependencyConfirmed;
-    }
-
-    setHitMaxImportDepth(maxImportDepth: number) {
-        this._hitMaxImportDepth = maxImportDepth;
-    }
-
-    // Parse the file and update the state. Callers should wait for completion
-    // (or at least cancel) prior to calling again. It returns true if a parse
-    // was required and false if the parse information was up to date already.
-    parse(configOptions: ConfigOptions, importResolver: ImportResolver, content?: string): boolean {
-        return this._logTracker.log(`parsing: ${this._getPathForLogging(this._filePath)}`, (logState) => {
-            // If the file is already parsed, we can skip.
-            if (!this.isParseRequired()) {
-                logState.suppress();
-                return false;
-            }
-
-            const diagSink = new DiagnosticSink();
-            let fileContents = this.getOpenFileContents();
-            if (fileContents === undefined) {
-                try {
-                    const startTime = timingStats.readFileTime.totalTime;
-                    timingStats.readFileTime.timeOperation(() => {
-                        // Read the file's contents.
-                        fileContents = content ?? this.getFileContent();
-                        if (fileContents === undefined) {
-                            throw new Error("Can't get file content");
-                        }
-
-                        // Remember the length and hash for comparison purposes.
-                        this._lastFileContentLength = fileContents.length;
-                        this._lastFileContentHash = StringUtils.hashString(fileContents);
-                    });
-                    logState.add(`fs read ${timingStats.readFileTime.totalTime - startTime}ms`);
-                } catch (error) {
-                    diagSink.addError(`Source file could not be read`, getEmptyRange());
-                    fileContents = '';
-
-                    if (!this.fileSystem.existsSync(this._filePath)) {
-                        this._isFileDeleted = true;
-                    }
-                }
-            }
-
-            try {
-                // Parse the token stream, building the abstract syntax tree.
-                const parseResults = parseFile(
-                    configOptions,
-                    this._filePath,
-                    fileContents!,
-                    this._ipythonMode,
-                    diagSink
-                );
-
-                assert(parseResults !== undefined && parseResults.tokenizerOutput !== undefined);
-                this._parseResults = parseResults;
-                this._typeIgnoreLines = this._parseResults.tokenizerOutput.typeIgnoreLines;
-                this._typeIgnoreAll = this._parseResults.tokenizerOutput.typeIgnoreAll;
-                this._pyrightIgnoreLines = this._parseResults.tokenizerOutput.pyrightIgnoreLines;
-
-                // Resolve imports.
-                const execEnvironment = configOptions.findExecEnvironment(this._filePath);
-                timingStats.resolveImportsTime.timeOperation(() => {
-                    const importResult = this._resolveImports(
-                        importResolver,
-                        parseResults.importedModules,
-                        execEnvironment
-                    );
-
-                    this._imports = importResult.imports;
-                    this._builtinsImport = importResult.builtinsImportResult;
-                    this._ipythonDisplayImport = importResult.ipythonDisplayImportResult;
-
-                    this._parseDiagnostics = diagSink.fetchAndClear();
-                });
-
-                // Is this file in a "strict" path?
-                const useStrict =
-                    configOptions.strict.find((strictFileSpec) => strictFileSpec.regExp.test(this._realFilePath)) !==
-                    undefined;
-
-                const commentDiags: CommentUtils.CommentDiagnostic[] = [];
-                this._diagnosticRuleSet = CommentUtils.getFileLevelDirectives(
-                    this._parseResults.tokenizerOutput.tokens,
-                    configOptions.diagnosticRuleSet,
-                    useStrict,
-                    commentDiags
-                );
-
-                this._commentDiagnostics = [];
-
-                commentDiags.forEach((commentDiag) => {
-                    this._commentDiagnostics.push(
-                        new Diagnostic(
-                            DiagnosticCategory.Error,
-                            commentDiag.message,
-                            convertTextRangeToRange(commentDiag.range, this._parseResults!.tokenizerOutput.lines)
-                        )
-                    );
-                });
-            } catch (e: any) {
-                const message: string =
-                    (e.stack ? e.stack.toString() : undefined) ||
-                    (typeof e.message === 'string' ? e.message : undefined) ||
-                    JSON.stringify(e);
-                this._console.error(
-                    Localizer.Diagnostic.internalParseError().format({ file: this.getFilePath(), message })
-                );
-
-                // Create dummy parse results.
-                this._parseResults = {
-                    text: '',
-                    parseTree: ModuleNode.create({ start: 0, length: 0 }),
-                    importedModules: [],
-                    futureImports: new Set<string>(),
-                    tokenizerOutput: {
-                        tokens: new TextRangeCollection<Token>([]),
-                        lines: new TextRangeCollection<TextRange>([]),
-                        typeIgnoreAll: undefined,
-                        typeIgnoreLines: new Map<number, IgnoreComment>(),
-                        pyrightIgnoreLines: new Map<number, IgnoreComment>(),
-                        predominantEndOfLineSequence: '\n',
-                        predominantTabSequence: '    ',
-                        predominantSingleQuoteCharacter: "'",
-                    },
-                    containsWildcardImport: false,
-                    typingSymbolAliases: new Map<string, string>(),
-                };
-                this._imports = undefined;
-                this._builtinsImport = undefined;
-                this._ipythonDisplayImport = undefined;
-
-                const diagSink = new DiagnosticSink();
-                diagSink.addError(
-                    Localizer.Diagnostic.internalParseError().format({ file: this.getFilePath(), message }),
-                    getEmptyRange()
-                );
-                this._parseDiagnostics = diagSink.fetchAndClear();
-
-                // Do not rethrow the exception, swallow it here. Callers are not
-                // prepared to handle an exception.
-            }
-
-            this._analyzedFileContentsVersion = this._fileContentsVersion;
-            this._indexingNeeded = true;
-            this._isBindingNeeded = true;
-            this._isCheckingNeeded = true;
-            this._parseTreeNeedsCleaning = false;
-            this._hitMaxImportDepth = undefined;
-            this._diagnosticVersion++;
-
-            return true;
-        });
-    }
-
-    index(options: IndexOptions, token: CancellationToken): IndexResults | undefined {
-        return this._logTracker.log(`indexing: ${this._getPathForLogging(this._filePath)}`, (ls) => {
-            // If we have no completed analysis job, there's nothing to do.
-            if (!this._parseResults || !this.isIndexingRequired()) {
-                ls.suppress();
-                return undefined;
-            }
-
-            this._indexingNeeded = false;
-            const symbols = DocumentSymbolProvider.indexSymbols(
-                AnalyzerNodeInfo.getFileInfo(this._parseResults.parseTree)!,
-                this._parseResults,
-                options,
-                token
-            );
-
-            ls.add(`found ${symbols.length}`);
-
-            const name = stripFileExtension(getFileName(this._filePath));
-            const privateOrProtected = SymbolNameUtils.isPrivateOrProtectedName(name);
-            return { privateOrProtected, symbols };
-        });
-    }
-
-    getDefinitionsForPosition(
-        sourceMapper: SourceMapper,
-        position: Position,
-        filter: DefinitionFilter,
-        evaluator: TypeEvaluator,
-        token: CancellationToken
-    ): DocumentRange[] | undefined {
-        // If we have no completed analysis job, there's nothing to do.
-        if (!this._parseResults) {
-            return undefined;
-        }
-
-        return DefinitionProvider.getDefinitionsForPosition(
-            sourceMapper,
-            this._parseResults,
-            position,
-            filter,
-            evaluator,
-            token
-        );
-    }
-
-    getTypeDefinitionsForPosition(
-        sourceMapper: SourceMapper,
-        position: Position,
-        evaluator: TypeEvaluator,
-        filePath: string,
-        token: CancellationToken
-    ): DocumentRange[] | undefined {
-        // If we have no completed analysis job, there's nothing to do.
-        if (!this._parseResults) {
-            return undefined;
-        }
-
-        return DefinitionProvider.getTypeDefinitionsForPosition(
-            sourceMapper,
-            this._parseResults,
-            position,
-            evaluator,
-            filePath,
-            token
-        );
-    }
-
-    getDeclarationForPosition(
-        sourceMapper: SourceMapper,
-        position: Position,
-        evaluator: TypeEvaluator,
-        reporter: ReferenceCallback | undefined,
-        useCase: DocumentSymbolCollectorUseCase,
-        token: CancellationToken,
-        implicitlyImportedBy?: SourceFile[]
-    ): ReferencesResult | undefined {
-        // If we have no completed analysis job, there's nothing to do.
-        if (!this._parseResults) {
-            return undefined;
-        }
-
-        return ReferencesProvider.getDeclarationForPosition(
-            sourceMapper,
-            this._parseResults,
-            this._filePath,
-            position,
-            evaluator,
-            reporter,
-            useCase,
-            token,
-            implicitlyImportedBy
-        );
-    }
-
-    addReferences(
-        referencesResult: ReferencesResult,
-        includeDeclaration: boolean,
-        evaluator: TypeEvaluator,
-        token: CancellationToken
-    ): void {
-        // If we have no completed analysis job, there's nothing to do.
-        if (!this._parseResults) {
-            return;
-        }
-
-        ReferencesProvider.addReferences(
-            this._parseResults,
-            this._filePath,
-            referencesResult,
-            includeDeclaration,
-            evaluator,
-            token
-        );
-    }
-
-    addHierarchicalSymbolsForDocument(symbolList: DocumentSymbol[], token: CancellationToken) {
-        // If we have no completed analysis job, there's nothing to do.
-        if (!this._parseResults && !this._cachedIndexResults) {
-            return;
-        }
-
-        DocumentSymbolProvider.addHierarchicalSymbolsForDocument(
-            this._parseResults ? AnalyzerNodeInfo.getFileInfo(this._parseResults.parseTree) : undefined,
-            this.getCachedIndexResults(),
-            this._parseResults,
-            symbolList,
-            token
-        );
-    }
-
-    getSymbolsForDocument(query: string, token: CancellationToken) {
-        // If we have no completed analysis job, there's nothing to do.
-        if (!this._parseResults && !this._cachedIndexResults) {
-            return [];
-        }
-
-        return DocumentSymbolProvider.getSymbolsForDocument(
-            this._parseResults ? AnalyzerNodeInfo.getFileInfo(this._parseResults.parseTree) : undefined,
-            this.getCachedIndexResults(),
-            this._parseResults,
-            this._filePath,
-            query,
-            token
-        );
-    }
-
-    getHoverForPosition(
-        sourceMapper: SourceMapper,
-        position: Position,
-        format: MarkupKind,
-        evaluator: TypeEvaluator,
-        functionSignatureDisplay: SignatureDisplayType,
-        token: CancellationToken
-    ): HoverResults | undefined {
-        // If this file hasn't been bound, no hover info is available.
-        if (this._isBindingNeeded || !this._parseResults) {
-            return undefined;
-        }
-
-        return HoverProvider.getHoverForPosition(
-            sourceMapper,
-            this._parseResults,
-            position,
-            format,
-            evaluator,
-            functionSignatureDisplay,
-            token
-        );
-    }
-
-    getDocumentHighlight(
-        sourceMapper: SourceMapper,
-        position: Position,
-        evaluator: TypeEvaluator,
-        token: CancellationToken
-    ): DocumentHighlight[] | undefined {
-        // If this file hasn't been bound, no hover info is available.
-        if (this._isBindingNeeded || !this._parseResults) {
-            return undefined;
-        }
-
-        return DocumentHighlightProvider.getDocumentHighlight(this._parseResults, position, evaluator, token);
-    }
-
-    getSignatureHelpForPosition(
-        position: Position,
-        sourceMapper: SourceMapper,
-        evaluator: TypeEvaluator,
-        format: MarkupKind,
-        token: CancellationToken
-    ): SignatureHelpResults | undefined {
-        // If we have no completed analysis job, there's nothing to do.
-        if (!this._parseResults) {
-            return undefined;
-        }
-
-        return SignatureHelpProvider.getSignatureHelpForPosition(
-            this._parseResults,
-            position,
-            sourceMapper,
-            evaluator,
-            format,
-            token
-        );
-    }
-
-    getCompletionsForPosition(
-        position: Position,
-        workspacePath: string,
-        configOptions: ConfigOptions,
-        importResolver: ImportResolver,
-        importLookup: ImportLookup,
-        evaluator: TypeEvaluator,
-        options: CompletionOptions,
-        sourceMapper: SourceMapper,
-        nameMap: AbbreviationMap | undefined,
-        libraryMap: Map<string, IndexResults> | undefined,
-        moduleSymbolsCallback: () => ModuleSymbolMap,
-        token: CancellationToken
-    ): CompletionResults | undefined {
-        // If we have no completed analysis job, there's nothing to do.
-        if (!this._parseResults) {
-            return undefined;
-        }
-
-        // This command should be called only for open files, in which
-        // case we should have the file contents already loaded.
-        const fileContents = this.getOpenFileContents();
-        if (fileContents === undefined) {
-            return undefined;
-        }
-
-        const completionProvider = new CompletionProvider(
-            workspacePath,
-            this._parseResults,
-            fileContents,
-            importResolver,
-            position,
-            this._filePath,
-            configOptions,
-            importLookup,
-            evaluator,
-            options,
-            sourceMapper,
-            {
-                nameMap,
-                libraryMap,
-                getModuleSymbolsMap: moduleSymbolsCallback,
-            },
-            token
-        );
-
-        return completionProvider.getCompletionsForPosition();
-    }
-
-    resolveCompletionItem(
-        configOptions: ConfigOptions,
-        importResolver: ImportResolver,
-        importLookup: ImportLookup,
-        evaluator: TypeEvaluator,
-        options: CompletionOptions,
-        sourceMapper: SourceMapper,
-        nameMap: AbbreviationMap | undefined,
-        libraryMap: Map<string, IndexResults> | undefined,
-        moduleSymbolsCallback: () => ModuleSymbolMap,
-        completionItem: CompletionItem,
-        token: CancellationToken
-    ) {
-        const fileContents = this.getOpenFileContents();
-        if (!this._parseResults || fileContents === undefined) {
-            return;
-        }
-
-        const completionData = fromLSPAny<CompletionItemData>(completionItem.data);
-        const completionProvider = new CompletionProvider(
-            completionData.workspacePath,
-            this._parseResults,
-            fileContents,
-            importResolver,
-            completionData.position,
-            this._filePath,
-            configOptions,
-            importLookup,
-            evaluator,
-            options,
-            sourceMapper,
-            {
-                nameMap,
-                libraryMap,
-                getModuleSymbolsMap: moduleSymbolsCallback,
-            },
-            token
-        );
-
-        completionProvider.resolveCompletionItem(completionItem);
-    }
-
-    performQuickAction(command: string, args: any[], token: CancellationToken): TextEditAction[] | undefined {
-        // If we have no completed analysis job, there's nothing to do.
-        if (!this._parseResults) {
-            return undefined;
-        }
-
-        // This command should be called only for open files, in which
-        // case we should have the file contents already loaded.
-        if (this.getClientVersion() === undefined) {
-            return undefined;
-        }
-
-        return performQuickAction(command, args, this._parseResults, token);
-    }
-
-    bind(
-        configOptions: ConfigOptions,
-        importLookup: ImportLookup,
-        builtinsScope: Scope | undefined,
-        futureImports: Set<string>
-    ) {
-        assert(!this.isParseRequired(), 'Bind called before parsing');
-        assert(this.isBindingRequired(), 'Bind called unnecessarily');
-        assert(!this._isBindingInProgress, 'Bind called while binding in progress');
-        assert(this._parseResults !== undefined, 'Parse results not available');
-
-        return this._logTracker.log(`binding: ${this._getPathForLogging(this._filePath)}`, () => {
-            try {
-                // Perform name binding.
-                timingStats.bindTime.timeOperation(() => {
-                    this._cleanParseTreeIfRequired();
-
-                    const fileInfo = this._buildFileInfo(
-                        configOptions,
-                        this._parseResults!.text,
-                        importLookup,
-                        builtinsScope,
-                        futureImports
-                    );
-                    AnalyzerNodeInfo.setFileInfo(this._parseResults!.parseTree, fileInfo);
-
-                    const binder = new Binder(fileInfo, configOptions.indexGenerationMode);
-                    this._isBindingInProgress = true;
-                    binder.bindModule(this._parseResults!.parseTree);
-
-                    // If we're in "test mode" (used for unit testing), run an additional
-                    // "test walker" over the parse tree to validate its internal consistency.
-                    if (configOptions.internalTestMode) {
-                        const testWalker = new TestWalker();
-                        testWalker.walk(this._parseResults!.parseTree);
-                    }
-
-                    this._bindDiagnostics = fileInfo.diagnosticSink.fetchAndClear();
-                    const moduleScope = AnalyzerNodeInfo.getScope(this._parseResults!.parseTree);
-                    assert(moduleScope !== undefined, 'Module scope not returned by binder');
-                    this._moduleSymbolTable = moduleScope!.symbolTable;
-                });
-            } catch (e: any) {
-                const message: string =
-                    (e.stack ? e.stack.toString() : undefined) ||
-                    (typeof e.message === 'string' ? e.message : undefined) ||
-                    JSON.stringify(e);
-                this._console.error(
-                    Localizer.Diagnostic.internalBindError().format({ file: this.getFilePath(), message })
-                );
-
-                const diagSink = new DiagnosticSink();
-                diagSink.addError(
-                    Localizer.Diagnostic.internalBindError().format({ file: this.getFilePath(), message }),
-                    getEmptyRange()
-                );
-                this._bindDiagnostics = diagSink.fetchAndClear();
-
-                // Do not rethrow the exception, swallow it here. Callers are not
-                // prepared to handle an exception.
-            } finally {
-                this._isBindingInProgress = false;
-            }
-
-            // Prepare for the next stage of the analysis.
-            this._diagnosticVersion++;
-            this._isCheckingNeeded = true;
-            this._indexingNeeded = true;
-            this._isBindingNeeded = false;
-        });
-    }
-
-    check(
-        importResolver: ImportResolver,
-        evaluator: TypeEvaluator,
-        sourceMapper: SourceMapper,
-        dependentFiles?: ParseResults[]
-    ) {
-        assert(!this.isParseRequired(), 'Check called before parsing');
-        assert(!this.isBindingRequired(), 'Check called before binding');
-        assert(!this._isBindingInProgress, 'Check called while binding in progress');
-        assert(this.isCheckingRequired(), 'Check called unnecessarily');
-        assert(this._parseResults !== undefined, 'Parse results not available');
-
-        return this._logTracker.log(`checking: ${this._getPathForLogging(this._filePath)}`, () => {
-            try {
-                timingStats.typeCheckerTime.timeOperation(() => {
-                    const checkDuration = new Duration();
-                    const checker = new Checker(
-                        importResolver,
-                        evaluator,
-                        this._parseResults!,
-                        sourceMapper,
-                        dependentFiles
-                    );
-                    checker.check();
-                    this._isCheckingNeeded = false;
-
-                    const fileInfo = AnalyzerNodeInfo.getFileInfo(this._parseResults!.parseTree)!;
-                    this._checkerDiagnostics = fileInfo.diagnosticSink.fetchAndClear();
-                    this._checkTime = checkDuration.getDurationInMilliseconds();
-                });
-            } catch (e: any) {
-                const isCancellation = OperationCanceledException.is(e);
-                if (!isCancellation) {
-                    const message: string =
-                        (e.stack ? e.stack.toString() : undefined) ||
-                        (typeof e.message === 'string' ? e.message : undefined) ||
-                        JSON.stringify(e);
-                    this._console.error(
-                        Localizer.Diagnostic.internalTypeCheckingError().format({ file: this.getFilePath(), message })
-                    );
-                    const diagSink = new DiagnosticSink();
-                    diagSink.addError(
-                        Localizer.Diagnostic.internalTypeCheckingError().format({ file: this.getFilePath(), message }),
-                        getEmptyRange()
-                    );
-
-                    this._checkerDiagnostics = diagSink.fetchAndClear();
-
-                    // Mark the file as complete so we don't get into an infinite loop.
-                    this._isCheckingNeeded = false;
-                }
-
-                throw e;
-            } finally {
-                // Clear any circular dependencies associated with this file.
-                // These will be detected by the program module and associated
-                // with the source file right before it is finalized.
-                this._circularDependencies = [];
-                this._diagnosticVersion++;
-            }
-        });
-    }
-
-    test_enableIPythonMode(enable: boolean) {
-        this._ipythonMode = enable ? IPythonMode.CellDocs : IPythonMode.None;
-    }
-
     private _buildFileInfo(
         configOptions: ConfigOptions,
-        fileContents: string,
         importLookup: ImportLookup,
         builtinsScope: Scope | undefined,
         futureImports: Set<string>
     ) {
-        assert(this._parseResults !== undefined, 'Parse results not available');
-        const analysisDiagnostics = new TextRangeDiagnosticSink(this._parseResults!.tokenizerOutput.lines);
+        assert(this._writableData.parserOutput !== undefined, 'Parse results not available');
+        const analysisDiagnostics = this.createTextRangeDiagnosticSink(this._writableData.tokenizerLines!);
 
         const fileInfo: AnalyzerFileInfo = {
             importLookup,
             futureImports,
             builtinsScope,
             diagnosticSink: analysisDiagnostics,
-            executionEnvironment: configOptions.findExecEnvironment(this._filePath),
+            executionEnvironment: configOptions.findExecEnvironment(this._uri),
             diagnosticRuleSet: this._diagnosticRuleSet,
-            fileContents,
-            lines: this._parseResults!.tokenizerOutput.lines,
-            typingSymbolAliases: this._parseResults!.typingSymbolAliases,
+            lines: this._writableData.tokenizerLines!,
+            typingSymbolAliases: this._writableData.parserOutput!.typingSymbolAliases,
             definedConstants: configOptions.defineConstant,
-            filePath: this._filePath,
-            moduleName: this._moduleName,
+            fileId: this._fileId,
+            fileUri: this._uri,
+            moduleName: this.getModuleName(),
             isStubFile: this._isStubFile,
             isTypingStubFile: this._isTypingStubFile,
             isTypingExtensionsStubFile: this._isTypingExtensionsStubFile,
+            isTypeshedStubFile: this._isTypeshedStubFile,
             isBuiltInStubFile: this._isBuiltInStubFile,
             isInPyTypedPackage: this._isThirdPartyPyTypedPresent,
             ipythonMode: this._ipythonMode,
@@ -1481,11 +1422,11 @@ export class SourceFile {
     }
 
     private _cleanParseTreeIfRequired() {
-        if (this._parseResults) {
-            if (this._parseTreeNeedsCleaning) {
-                const cleanerWalker = new ParseTreeCleanerWalker(this._parseResults.parseTree);
+        if (this._writableData.parserOutput) {
+            if (this._writableData.parseTreeNeedsCleaning) {
+                const cleanerWalker = new ParseTreeCleanerWalker(this._writableData.parserOutput.parseTree);
                 cleanerWalker.clean();
-                this._parseTreeNeedsCleaning = false;
+                this._writableData.parseTreeNeedsCleaning = false;
             }
         }
     }
@@ -1498,7 +1439,7 @@ export class SourceFile {
         const imports: ImportResult[] = [];
 
         const resolveAndAddIfNotSelf = (nameParts: string[], skipMissingImport = false) => {
-            const importResult = importResolver.resolveImport(this._filePath, execEnv, {
+            const importResult = importResolver.resolveImport(this._uri, execEnv, {
                 leadingDots: 0,
                 nameParts,
                 importedSymbols: undefined,
@@ -1509,7 +1450,7 @@ export class SourceFile {
             }
 
             // Avoid importing module from the module file itself.
-            if (importResult.resolvedPaths.length === 0 || importResult.resolvedPaths[0] !== this._filePath) {
+            if (importResult.resolvedUris.length === 0 || importResult.resolvedUris[0] !== this._uri) {
                 imports.push(importResult);
                 return importResult;
             }
@@ -1530,12 +1471,10 @@ export class SourceFile {
             builtinsImportResult = resolveAndAddIfNotSelf(['builtins']);
         }
 
-        const ipythonDisplayImportResult = this._ipythonMode
-            ? resolveAndAddIfNotSelf(['IPython', 'display'])
-            : undefined;
+        resolveAndAddIfNotSelf(['_typeshed', '_type_checker_internals'], /* skipMissingImport */ true);
 
         for (const moduleImport of moduleImports) {
-            const importResult = importResolver.resolveImport(this._filePath, execEnv, {
+            const importResult = importResolver.resolveImport(this._uri, execEnv, {
                 leadingDots: moduleImport.leadingDots,
                 nameParts: moduleImport.nameParts,
                 importedSymbols: moduleImport.importedSymbols,
@@ -1546,7 +1485,7 @@ export class SourceFile {
             // Associate the import results with the module import
             // name node in the parse tree so we can access it later
             // (for hover and definition support).
-            if (moduleImport.nameParts.length === moduleImport.nameNode.nameParts.length) {
+            if (moduleImport.nameParts.length === moduleImport.nameNode.d.nameParts.length) {
                 AnalyzerNodeInfo.setImportInfo(moduleImport.nameNode, importResult);
             } else {
                 // For implicit imports of higher-level modules within a multi-part
@@ -1554,9 +1493,9 @@ export class SourceFile {
                 // of the multi-part name rather than the full multi-part name. In this
                 // case, store the import info on the name part node.
                 assert(moduleImport.nameParts.length > 0);
-                assert(moduleImport.nameParts.length - 1 < moduleImport.nameNode.nameParts.length);
+                assert(moduleImport.nameParts.length - 1 < moduleImport.nameNode.d.nameParts.length);
                 AnalyzerNodeInfo.setImportInfo(
-                    moduleImport.nameNode.nameParts[moduleImport.nameParts.length - 1],
+                    moduleImport.nameNode.d.nameParts[moduleImport.nameParts.length - 1],
                     importResult
                 );
             }
@@ -1565,39 +1504,68 @@ export class SourceFile {
         return {
             imports,
             builtinsImportResult,
-            ipythonDisplayImportResult,
         };
     }
 
-    private _getPathForLogging(filepath: string) {
-        if (this.fileSystem.isMappedFilePath(filepath)) {
-            return this.fileSystem.getOriginalFilePath(filepath);
+    private _getPathForLogging(fileUri: Uri) {
+        return getPathForLogging(this.fileSystem, fileUri);
+    }
+
+    private _parseFile(
+        configOptions: ConfigOptions,
+        fileUri: Uri,
+        fileContents: string,
+        useNotebookMode: boolean,
+        diagSink: DiagnosticSink
+    ): ParseFileResults {
+        // Use the configuration options to determine the environment zin which
+        // this source file will be executed.
+        const execEnvironment = configOptions.findExecEnvironment(fileUri);
+
+        const parseOptions = new ParseOptions();
+        parseOptions.useNotebookMode = useNotebookMode;
+        if (fileUri.pathEndsWith('pyi')) {
+            parseOptions.isStubFile = true;
+        }
+        parseOptions.pythonVersion = execEnvironment.pythonVersion;
+        parseOptions.skipFunctionAndClassBody = configOptions.indexGenerationMode ?? false;
+
+        // Parse the token stream, building the abstract syntax tree.
+        const parser = new Parser();
+        return parser.parseSourceFile(fileContents, parseOptions, diagSink);
+    }
+
+    private _tokenizeContents(fileContents: string, contentHash: number): TokenizerOutput {
+        const tokenizer = new Tokenizer();
+        const output = tokenizer.tokenize(fileContents);
+
+        // When the file is open, cache the tokenizer results.
+        // Because the tokenizer is lazy, ensure that the state remains unchanged before caching its output.
+        if (
+            this._writableData.clientDocumentContents !== undefined &&
+            this._writableData.lastFileContentHash === contentHash
+        ) {
+            this._writableData.tokenizerOutput = output;
+
+            // Replace the existing tokenizerLines with the newly-returned
+            // version. They should have the same contents, but we want to use
+            // the same object so the older object can be deallocated.
+            this._writableData.tokenizerLines = output.lines;
         }
 
-        return filepath;
+        return output;
     }
-}
 
-export function parseFile(
-    configOptions: ConfigOptions,
-    filePath: string,
-    fileContents: string,
-    ipythonMode: IPythonMode,
-    diagSink: DiagnosticSink
-) {
-    // Use the configuration options to determine the environment in which
-    // this source file will be executed.
-    const execEnvironment = configOptions.findExecEnvironment(filePath);
-
-    const parseOptions = new ParseOptions();
-    parseOptions.ipythonMode = ipythonMode;
-    if (filePath.endsWith('pyi')) {
-        parseOptions.isStubFile = true;
+    private _fireFileDirtyEvent() {
+        this.serviceProvider.tryGet(ServiceKeys.stateMutationListeners)?.forEach((l) => {
+            try {
+                l.onFileDirty?.(this._uri);
+            } catch (ex: any) {
+                const console = this.serviceProvider.tryGet(ServiceKeys.console);
+                if (console) {
+                    console.error(`State mutation listener exception: ${ex.message}`);
+                }
+            }
+        });
     }
-    parseOptions.pythonVersion = execEnvironment.pythonVersion;
-    parseOptions.skipFunctionAndClassBody = configOptions.indexGenerationMode ?? false;
-
-    // Parse the token stream, building the abstract syntax tree.
-    const parser = new Parser();
-    return parser.parseSourceFile(fileContents, parseOptions, diagSink);
 }

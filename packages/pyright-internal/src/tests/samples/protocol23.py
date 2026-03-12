@@ -2,13 +2,12 @@
 # can't be assigned to Type[Proto].
 
 from abc import abstractmethod
-from typing import Protocol, Type
+from typing import Protocol
 
 
 class Proto(Protocol):
     @abstractmethod
-    def meth(self) -> int:
-        ...
+    def meth(self) -> int: ...
 
 
 class Concrete:
@@ -16,7 +15,7 @@ class Concrete:
         return 42
 
 
-def func1(cls: Type[Proto]) -> int:
+def func1(cls: type[Proto]) -> int:
     return cls().meth()
 
 
@@ -26,7 +25,7 @@ func1(Concrete)
 # not a concrete class type that implements the protocol.
 func1(Proto)
 
-val1: Type[Proto]
+val1: type[Proto]
 val1 = Concrete
 val1().meth()
 
@@ -34,8 +33,7 @@ val1().meth()
 val1 = Proto
 
 
-def func2() -> Type[Proto]:
-    ...
+def func2() -> type[Proto]: ...
 
 
 val1 = func2()

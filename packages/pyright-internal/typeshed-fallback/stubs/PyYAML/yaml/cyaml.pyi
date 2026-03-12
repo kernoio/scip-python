@@ -1,4 +1,4 @@
-from _typeshed import Incomplete, SupportsRead
+from _typeshed import SupportsRead
 from collections.abc import Mapping, Sequence
 from typing import IO, Any
 from typing_extensions import TypeAlias
@@ -32,38 +32,38 @@ class CBaseDumper(CEmitter, BaseRepresenter, BaseResolver):
     def __init__(
         self,
         stream: IO[Any],
-        default_style: str | None = ...,
-        default_flow_style: bool | None = ...,
-        canonical: Incomplete | None = ...,
-        indent: int | None = ...,
-        width: int | None = ...,
-        allow_unicode: Incomplete | None = ...,
-        line_break: str | None = ...,
-        encoding: str | None = ...,
-        explicit_start: Incomplete | None = ...,
-        explicit_end: Incomplete | None = ...,
-        version: Sequence[int] | None = ...,
-        tags: Mapping[str, str] | None = ...,
-        sort_keys: bool = ...,
+        default_style: str | None = None,
+        default_flow_style: bool | None = False,
+        canonical=None,
+        indent: int | None = None,
+        width: int | None = None,
+        allow_unicode=None,
+        line_break: str | None = None,
+        encoding: str | None = None,
+        explicit_start=None,
+        explicit_end=None,
+        version: Sequence[int] | None = None,
+        tags: Mapping[str, str] | None = None,
+        sort_keys: bool = True,
     ) -> None: ...
 
 class CDumper(CEmitter, SafeRepresenter, Resolver):
     def __init__(
         self,
         stream: IO[Any],
-        default_style: str | None = ...,
-        default_flow_style: bool = ...,
-        canonical: Incomplete | None = ...,
-        indent: int | None = ...,
-        width: int | None = ...,
-        allow_unicode: Incomplete | None = ...,
-        line_break: str | None = ...,
-        encoding: str | None = ...,
-        explicit_start: Incomplete | None = ...,
-        explicit_end: Incomplete | None = ...,
-        version: Sequence[int] | None = ...,
-        tags: Mapping[str, str] | None = ...,
-        sort_keys: bool = ...,
+        default_style: str | None = None,
+        default_flow_style: bool = False,
+        canonical=None,
+        indent: int | None = None,
+        width: int | None = None,
+        allow_unicode=None,
+        line_break: str | None = None,
+        encoding: str | None = None,
+        explicit_start=None,
+        explicit_end=None,
+        version: Sequence[int] | None = None,
+        tags: Mapping[str, str] | None = None,
+        sort_keys: bool = True,
     ) -> None: ...
 
 CSafeDumper = CDumper

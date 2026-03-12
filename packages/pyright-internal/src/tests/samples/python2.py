@@ -13,7 +13,8 @@ exec 3 + 4
 
 try:
     bar = 3
-# This should generate an error.
+# This should generate one error on Python 3.14 and newer
+# and two errors on older versions.
 except NameError, 'error caused':
     pass
 
@@ -26,6 +27,6 @@ a = `b`
 def foo(a, (b, c), d):
     pass
 
-# This should generate an error.
+# This should generate two errors.
 raise NameError, a > 4, a < 4
 

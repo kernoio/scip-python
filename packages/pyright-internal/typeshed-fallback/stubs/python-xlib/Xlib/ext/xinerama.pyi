@@ -1,9 +1,11 @@
-from Xlib._typing import Unused
+from _typeshed import Unused
+from typing import Final
+
 from Xlib.display import Display
 from Xlib.protocol import rq
 from Xlib.xobject import drawable, resource
 
-extname: str
+extname: Final = "XINERAMA"
 
 class QueryVersion(rq.ReplyRequest): ...
 

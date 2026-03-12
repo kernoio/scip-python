@@ -5,34 +5,35 @@
 # pyright: reportMissingModuleSource=false
 
 import os
-from typing import Any, List, Tuple, TypeVar, Union
-from typing_extensions import TypeGuard
+from typing import Any, Callable, TypeVar
+
+from typing_extensions import TypeGuard  # pyright: ignore[reportMissingModuleSource]
 
 _T = TypeVar("_T")
 
 
-def is_two_element_tuple(a: Tuple[_T, ...]) -> TypeGuard[Tuple[_T, _T]]:
+def is_two_element_tuple(a: tuple[_T, ...]) -> TypeGuard[tuple[_T, _T]]:
     return True
 
 
-def func1(a: Tuple[int, ...]):
+def func1(a: tuple[int, ...]):
     if is_two_element_tuple(a):
-        reveal_type(a, expected_text="Tuple[int, int]")
+        reveal_type(a, expected_text="tuple[int, int]")
     else:
-        reveal_type(a, expected_text="Tuple[int, ...]")
+        reveal_type(a, expected_text="tuple[int, ...]")
 
 
-def is_string_list(val: List[Any], allow_zero_entries: bool) -> TypeGuard[List[str]]:
+def is_string_list(val: list[Any], allow_zero_entries: bool) -> TypeGuard[list[str]]:
     if allow_zero_entries and len(val) == 0:
         return True
     return all(isinstance(x, str) for x in val)
 
 
-def func2(a: List[Union[str, int]]):
+def func2(a: list[str | int]):
     if is_string_list(a, True):
-        reveal_type(a, expected_text="List[str]")
+        reveal_type(a, expected_text="list[str]")
     else:
-        reveal_type(a, expected_text="List[str | int]")
+        reveal_type(a, expected_text="list[str | int]")
 
 
 # This should generate an error because TypeGuard
@@ -92,8 +93,7 @@ def func3(x: Any):
         reveal_type(x, expected_text="int")
 
 
-def is_int(obj: type) -> TypeGuard[type[int]]:
-    ...
+def is_int(obj: type) -> TypeGuard[type[int]]: ...
 
 
 def func4(typ: type[_T]) -> _T:
@@ -101,3 +101,32 @@ def func4(typ: type[_T]) -> _T:
         raise Exception("Unsupported type")
 
     return typ()
+
+
+def takes_int_typeguard(f: Callable[[object], TypeGuard[int]]) -> None:
+    pass
+
+
+def int_typeguard(val: object) -> TypeGuard[int]:
+    return isinstance(val, int)
+
+
+def bool_typeguard(val: object) -> TypeGuard[bool]:
+    return isinstance(val, bool)
+
+
+def str_typeguard(val: object) -> TypeGuard[str]:
+    return isinstance(val, str)
+
+
+takes_int_typeguard(int_typeguard)
+takes_int_typeguard(bool_typeguard)
+
+# This should generate an error because TypeGuard is covariant.
+takes_int_typeguard(str_typeguard)
+
+
+v0 = is_int(int)
+v1: bool = v0
+v2: int = v0
+v3 = v0 & v0

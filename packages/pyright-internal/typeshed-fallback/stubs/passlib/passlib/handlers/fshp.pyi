@@ -1,4 +1,5 @@
 from typing import Any, ClassVar
+from typing_extensions import Self
 
 import passlib.utils.handlers as uh
 
@@ -14,13 +15,15 @@ class fshp(uh.HasRounds, uh.HasRawSalt, uh.HasRawChecksum, uh.GenericHandler):  
     rounds_cost: ClassVar[str]
     default_variant: ClassVar[int]
     @classmethod
-    def using(cls, variant: int | str | bytes | None = ..., **kwds): ...  # type: ignore[override]
+    def using(cls, variant: int | str | bytes | None = None, **kwds): ...  # type: ignore[override]
     variant: int | None
     use_defaults: Any
-    def __init__(self, variant: int | str | bytes | None = ..., **kwds) -> None: ...
+    def __init__(self, variant: int | str | bytes | None = None, **kwds) -> None: ...
     @property
     def checksum_alg(self): ...
     @property
-    def checksum_size(self): ...
+    def checksum_size(self): ...  # type: ignore[override]
     @classmethod
-    def from_string(cls, hash): ...
+    def from_string(cls, hash) -> Self: ...  # type: ignore[override]
+
+__all__ = ["fshp"]

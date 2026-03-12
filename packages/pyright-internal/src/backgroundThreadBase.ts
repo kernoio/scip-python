@@ -8,106 +8,217 @@
 
 import { MessagePort, parentPort, TransferListItem } from 'worker_threads';
 
-import { OperationCanceledException, setCancellationFolderName } from './common/cancellationUtils';
+import { CacheManager } from './analyzer/cacheManager';
+import {
+    getCancellationTokenId,
+    OperationCanceledException,
+    setCancellationFolderName,
+} from './common/cancellationUtils';
 import { ConfigOptions } from './common/configOptions';
-import { LogLevel } from './common/console';
+import { ConsoleInterface, LogLevel } from './common/console';
+import { isThenable } from './common/core';
 import * as debug from './common/debug';
-import { FileSystem } from './common/fileSystem';
-import { FileSpec } from './common/pathUtils';
-import { createFromRealFileSystem } from './common/realFileSystem';
-import { PyrightFileSystem } from './pyrightFileSystem';
+import { createFromRealFileSystem, RealTempFile } from './common/realFileSystem';
+import { ServiceKeys } from './common/serviceKeys';
+import { ServiceProvider } from './common/serviceProvider';
+import './common/serviceProviderExtensions';
+import { Uri } from './common/uri/uri';
+import { CancellationToken } from 'vscode-jsonrpc';
+import { getCancellationTokenFromId } from './common/fileBasedCancellationUtils';
+
+export class BackgroundConsole implements ConsoleInterface {
+    private _level = LogLevel.Log;
+
+    constructor(private readonly _parentPort: MessagePort) {}
+
+    get level() {
+        return this._level;
+    }
+
+    set level(value: LogLevel) {
+        this._level = value;
+    }
+
+    log(msg: string) {
+        this.post(LogLevel.Log, msg);
+    }
+
+    info(msg: string) {
+        this.post(LogLevel.Info, msg);
+    }
+
+    warn(msg: string) {
+        this.post(LogLevel.Warn, msg);
+    }
+
+    error(msg: string) {
+        this.post(LogLevel.Error, msg);
+    }
+
+    protected post(level: LogLevel, msg: string) {
+        this._parentPort.postMessage({ requestType: 'log', data: serialize({ level: level, message: `BG: ${msg}` }) });
+    }
+}
 
 export class BackgroundThreadBase {
-    protected fs: FileSystem;
+    private readonly _serviceProvider: ServiceProvider;
 
-    protected constructor(data: InitializationData) {
+    protected constructor(data: InitializationData, serviceProvider?: ServiceProvider) {
         setCancellationFolderName(data.cancellationFolderName);
 
-        // Stash the base directory into a global variable.
-        (global as any).__rootDirectory = data.rootDirectory;
+        // Make sure there's a file system and a console interface.
+        this._serviceProvider = serviceProvider ?? new ServiceProvider();
+        if (!this._serviceProvider.tryGet(ServiceKeys.console)) {
+            this._serviceProvider.add(ServiceKeys.console, new BackgroundConsole(parentPort!));
+        }
 
-        this.fs = new PyrightFileSystem(createFromRealFileSystem(this.getConsole()));
+        let tempFile = this._serviceProvider.tryGet(ServiceKeys.tempFile);
+        if (!tempFile) {
+            tempFile = new RealTempFile(data.tempFileName);
+            this._serviceProvider.add(ServiceKeys.tempFile, tempFile);
+        }
+
+        if (!this._serviceProvider.tryGet(ServiceKeys.caseSensitivityDetector)) {
+            this._serviceProvider.add(ServiceKeys.caseSensitivityDetector, tempFile as RealTempFile);
+        }
+
+        if (!this._serviceProvider.tryGet(ServiceKeys.fs)) {
+            this._serviceProvider.add(
+                ServiceKeys.fs,
+                createFromRealFileSystem(
+                    this._serviceProvider.get(ServiceKeys.caseSensitivityDetector),
+                    this.getConsole()
+                )
+            );
+        }
+        if (!this._serviceProvider.tryGet(ServiceKeys.cacheManager)) {
+            this._serviceProvider.add(ServiceKeys.cacheManager, new CacheManager());
+        }
+
+        // Stash the base directory into a global variable.
+        (global as any).__rootDirectory = Uri.parse(data.rootUri, this._serviceProvider).getFilePath();
+    }
+
+    protected get fs() {
+        return this._serviceProvider.fs();
     }
 
     protected log(level: LogLevel, msg: string) {
-        parentPort?.postMessage({ requestType: 'log', data: { level: level, message: msg } });
+        parentPort?.postMessage({ requestType: 'log', data: serialize({ level: level, message: `BG: ${msg}` }) });
     }
 
     protected getConsole() {
-        return {
-            log: (msg: string) => {
-                this.log(LogLevel.Log, msg);
-            },
-            info: (msg: string) => {
-                this.log(LogLevel.Info, msg);
-            },
-            warn: (msg: string) => {
-                this.log(LogLevel.Warn, msg);
-            },
-            error: (msg: string) => {
-                this.log(LogLevel.Error, msg);
-            },
-            // We always generate logs in the background. For the foreground,
-            // we'll decide decide based on user setting whether.
-            level: LogLevel.Log,
-        };
+        return this._serviceProvider.console();
     }
 
-    protected shutdown() {
-        this.fs.dispose();
+    protected getServiceProvider() {
+        return this._serviceProvider;
+    }
+
+    protected handleShutdown() {
+        this._serviceProvider.dispose();
         parentPort?.close();
     }
 }
 
-export function createConfigOptionsFrom(jsonObject: any): ConfigOptions {
-    const configOptions = new ConfigOptions(jsonObject.projectRoot);
-    const getFileSpec = (fileSpec: any): FileSpec => {
-        return {
-            wildcardRoot: fileSpec.wildcardRoot,
-            regExp: new RegExp(fileSpec.regExp.source),
-            hasDirectoryWildcard: fileSpec.hasDirectoryWildcard,
-        };
-    };
+// Function used to serialize specific types that can't automatically be serialized.
+// Exposed here so it can be reused by a caller that wants to add more cases.
+export function serializeReplacer(value: any) {
+    if (Uri.is(value) && value.toJsonObj !== undefined) {
+        return { __serialized_uri_val: value.toJsonObj() };
+    }
+    if (value instanceof Map) {
+        return { __serialized_map_val: [...value] };
+    }
+    if (value instanceof Set) {
+        return { __serialized_set_val: [...value] };
+    }
+    if (value instanceof RegExp) {
+        return { __serialized_regexp_val: { source: value.source, flags: value.flags } };
+    }
+    if (value instanceof ConfigOptions) {
+        const entries = Object.entries(value);
+        return { __serialized_config_options: entries.reduce((obj, e, i) => ({ ...obj, [e[0]]: e[1] }), {}) };
+    }
+    if (CancellationToken.is(value)) {
+        return { cancellation_token_val: getCancellationTokenId(value) ?? null };
+    }
 
-    configOptions.pythonPath = jsonObject.pythonPath;
-    configOptions.typeshedPath = jsonObject.typeshedPath;
-    configOptions.stubPath = jsonObject.stubPath;
-    configOptions.autoExcludeVenv = jsonObject.autoExcludeVenv;
-    configOptions.verboseOutput = jsonObject.verboseOutput;
-    configOptions.defineConstant = new Map<string, boolean | string>(jsonObject.defineConstant);
-    configOptions.checkOnlyOpenFiles = jsonObject.checkOnlyOpenFiles;
-    configOptions.useLibraryCodeForTypes = jsonObject.useLibraryCodeForTypes;
-    configOptions.internalTestMode = jsonObject.internalTestMode;
-    configOptions.indexGenerationMode = jsonObject.indexGenerationMode;
-    configOptions.venvPath = jsonObject.venvPath;
-    configOptions.venv = jsonObject.venv;
-    configOptions.defaultPythonVersion = jsonObject.defaultPythonVersion;
-    configOptions.defaultPythonPlatform = jsonObject.defaultPythonPlatform;
-    configOptions.defaultExtraPaths = jsonObject.defaultExtraPaths;
-    configOptions.diagnosticRuleSet = jsonObject.diagnosticRuleSet;
-    configOptions.executionEnvironments = jsonObject.executionEnvironments;
-    configOptions.autoImportCompletions = jsonObject.autoImportCompletions;
-    configOptions.indexing = jsonObject.indexing;
-    configOptions.taskListTokens = jsonObject.taskListTokens;
-    configOptions.logTypeEvaluationTime = jsonObject.logTypeEvaluationTime;
-    configOptions.typeEvaluationTimeThreshold = jsonObject.typeEvaluationTimeThreshold;
-    configOptions.include = jsonObject.include.map((f: any) => getFileSpec(f));
-    configOptions.exclude = jsonObject.exclude.map((f: any) => getFileSpec(f));
-    configOptions.ignore = jsonObject.ignore.map((f: any) => getFileSpec(f));
-    configOptions.strict = jsonObject.strict.map((f: any) => getFileSpec(f));
-    configOptions.functionSignatureDisplay = jsonObject.functionSignatureDisplay;
+    return value;
+}
 
-    return configOptions;
+export function serialize(obj: any): string {
+    // Convert the object to a string so it can be sent across a message port.
+    return JSON.stringify(obj, (k, v) => serializeReplacer(v));
+}
+
+export function deserializeReviver(value: any) {
+    if (value && typeof value === 'object') {
+        if (value.__serialized_uri_val !== undefined) {
+            return Uri.fromJsonObj(value.__serialized_uri_val);
+        }
+        if (value.__serialized_map_val) {
+            return new Map(value.__serialized_map_val);
+        }
+        if (value.__serialized_set_val) {
+            return new Set(value.__serialized_set_val);
+        }
+        if (value.__serialized_regexp_val) {
+            return new RegExp(value.__serialized_regexp_val.source, value.__serialized_regexp_val.flags);
+        }
+        if (value.__serialized_config_options) {
+            const configOptions = new ConfigOptions(value.__serialized_config_options.projectRoot);
+            Object.assign(configOptions, value.__serialized_config_options);
+            return configOptions;
+        }
+        if (Object.keys(value).includes('cancellation_token_val')) {
+            return getCancellationTokenFromId(value.cancellation_token_val);
+        }
+    }
+    return value;
+}
+
+export function deserialize<T = any>(json: string | null): T {
+    if (!json) {
+        return undefined as any;
+    }
+    // Convert the string back to an object.
+    return JSON.parse(json, (k, v) => deserializeReviver(v));
 }
 
 export interface MessagePoster {
     postMessage(value: any, transferList?: ReadonlyArray<TransferListItem>): void;
 }
 
-export function run<T = any>(code: () => T, port: MessagePoster) {
+export function run<T = any>(code: () => Promise<T>, port: MessagePoster): Promise<void>;
+export function run<T = any>(code: () => Promise<T>, port: MessagePoster, serializer: (obj: any) => any): Promise<void>;
+export function run<T = any>(code: () => T, port: MessagePoster): void;
+export function run<T = any>(code: () => T, port: MessagePoster, serializer: (obj: any) => any): void;
+export function run<T = any>(
+    code: () => T | Promise<T>,
+    port: MessagePoster,
+    serializer = serialize
+): void | Promise<void> {
     try {
         const result = code();
-        port.postMessage({ kind: 'ok', data: result });
+        if (!isThenable(result)) {
+            port.postMessage({ kind: 'ok', data: serializer(result) });
+            return;
+        }
+
+        return result.then(
+            (r) => {
+                port.postMessage({ kind: 'ok', data: serializer(r) });
+            },
+            (e) => {
+                if (OperationCanceledException.is(e)) {
+                    port.postMessage({ kind: 'cancelled', data: e.message });
+                    return;
+                }
+
+                port.postMessage({ kind: 'failed', data: `Exception: ${e.message} in ${e.stack}` });
+            }
+        );
     } catch (e: any) {
         if (OperationCanceledException.is(e)) {
             port.postMessage({ kind: 'cancelled', data: e.message });
@@ -118,12 +229,20 @@ export function run<T = any>(code: () => T, port: MessagePoster) {
     }
 }
 
-export function getBackgroundWaiter<T>(port: MessagePort): Promise<T> {
+export type BackgroundDataHandler = (data: any, port: MessagePort) => void;
+
+export function getBackgroundWaiter<T>(
+    port: MessagePort,
+    options?: { deserializer?: (v: any) => T; dataHandler?: BackgroundDataHandler }
+): Promise<T> {
+    const deserializer = options?.deserializer ?? deserialize;
+    const dataHandler = options?.dataHandler ?? (() => {});
+
     return new Promise((resolve, reject) => {
         port.on('message', (m: RequestResponse) => {
             switch (m.kind) {
                 case 'ok':
-                    resolve(m.data);
+                    resolve(deserializer(m.data));
                     break;
 
                 case 'cancelled':
@@ -134,22 +253,30 @@ export function getBackgroundWaiter<T>(port: MessagePort): Promise<T> {
                     reject(m.data);
                     break;
 
+                case 'data':
+                    // Handle streaming data from the background thread
+                    dataHandler(m.data, port);
+                    break;
+
                 default:
-                    debug.fail(`unknown kind ${m.kind}`);
+                    debug.fail(`unknown kind ${m.kind} ${JSON.stringify(m)}`);
             }
         });
     });
 }
 
 export interface InitializationData {
-    rootDirectory: string;
+    rootUri: string;
+    workspaceRootUri: string;
+    tempFileName: string;
+    serviceId: string;
+    workerIndex: number;
     cancellationFolderName: string | undefined;
     runner: string | undefined;
-    title?: string;
 }
 
 export interface RequestResponse {
-    kind: 'ok' | 'failed' | 'cancelled';
+    kind: 'ok' | 'failed' | 'cancelled' | 'data';
     data: any;
 }
 

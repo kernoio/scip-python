@@ -36,4 +36,5 @@ type TA7 = TA6
 
 type JSONNode = list[JSONNode] | dict[str, JSONNode] | str | float
 
-
+# This should generate an error because it is unresolvable.
+type TA8[**P] = TA8[P, int]

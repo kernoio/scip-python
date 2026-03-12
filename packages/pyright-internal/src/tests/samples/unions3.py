@@ -2,6 +2,7 @@
 # is supported for classes that have a custom metaclass
 # with a __or__ or __ror__ method defined.
 
+# pyright: reportIncompatibleMethodOverride=false
 
 from typing import Type, TypeVar
 
@@ -15,21 +16,21 @@ class ClassWithNoMeta2:
 
 
 NoMetaUnion = ClassWithNoMeta1 | ClassWithNoMeta2
-reveal_type(
-    NoMetaUnion, expected_text="Type[ClassWithNoMeta1] | Type[ClassWithNoMeta2]"
-)
+
+
+def func1(x: NoMetaUnion):
+    reveal_type(x, expected_text="ClassWithNoMeta1 | ClassWithNoMeta2")
+
 
 _T = TypeVar("_T")
 
 
 class Metaclass1(type):
-    def __or__(cls: _T, other: type) -> _T:
-        ...
+    def __or__(cls: _T, other: type) -> _T: ...
 
 
 class Metaclass2(type):
-    def __ror__(cls: _T, other: type) -> _T:
-        ...
+    def __ror__(cls: _T, other: type) -> _T: ...
 
 
 class ClassWithMeta1(metaclass=Metaclass1):

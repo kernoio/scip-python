@@ -3,12 +3,19 @@
 # generic type aliases when one TypeVar default expression refers
 # to another.
 
-from typing import Callable, Generic, ParamSpec, TypeVar, TypeVarTuple, Unpack
+from typing import Callable, Generic, Unpack
+from typing_extensions import (  # pyright: ignore[reportMissingModuleSource]
+    ParamSpec,
+    TypeVar,
+    TypeVarTuple,
+)
 
 T1 = TypeVar("T1", default=str)
 T2 = TypeVar("T2", default=T1)
 T3 = TypeVar("T3", default=list[T2])
 T4 = TypeVar("T4", default=dict[T1, T2])
+
+# This should generate an error because of the recursive definition.
 T5 = TypeVar("T5", default="T5")
 
 TA_A = dict[T1, T2]
@@ -91,8 +98,7 @@ Ts1 = TypeVarTuple("Ts1", default=Unpack[tuple[T1, T2]])
 Ts2 = TypeVarTuple("Ts2", default=Unpack[tuple[T1, ...]])
 
 
-class ClassTA(Generic[T1, T2, *Ts1]):
-    ...
+class ClassTA(Generic[T1, T2, *Ts1]): ...
 
 
 TA_TA = ClassTA[T1, T2, *Ts1]
@@ -111,11 +117,11 @@ def func5(
 
 
 # This should generate an error because Ts1 depends on T2.
+# It should also generate a second error because T2 follows a TypeVarTuple.
 TA_TB = tuple[T1, *Ts1, T2]
 
 
-class ClassTC(Generic[T1, *Ts2]):
-    ...
+class ClassTC(Generic[T1, *Ts2]): ...
 
 
 TA_TC = ClassTC[T1, *Ts2]

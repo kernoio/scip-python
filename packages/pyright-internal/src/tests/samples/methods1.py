@@ -1,15 +1,7 @@
 # This sample tests that instance methods, regardless of how they're
 # defined or decorated, act like instance methods.
 
-from typing import (
-    Any,
-    Callable,
-    ClassVar,
-    Concatenate,
-    Generic,
-    ParamSpec,
-    TypeVar,
-)
+from typing import Any, Callable, ClassVar, Concatenate, Generic, ParamSpec, TypeVar
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -24,7 +16,7 @@ def deco1(x: Callable[P, R]) -> Callable[P, R]:
 
 
 def deco2(
-    func: Callable[P, Any]
+    func: Callable[P, Any],
 ) -> Callable[[Callable[..., Any]], Callable[Concatenate["ClassA", P], None]]:
     return lambda f: f  # type: ignore
 

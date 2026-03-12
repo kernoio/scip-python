@@ -3,9 +3,25 @@
 # tuple of classes.
 
 
+import sys
 from abc import abstractmethod
-from typing import Any, Generic, Tuple, Type, TypeVar, Union
+from typing import (
+    Annotated,
+    Any,
+    Callable,
+    Generic,
+    Sequence,
+    Tuple,
+    Type,
+    TypeVar,
+    TypedDict,
+    Union,
+)
 
+if sys.version_info >= (3, 10):
+    from types import NoneType
+else:
+    NoneType = type(None)
 
 _T = TypeVar("_T", int, str)
 
@@ -24,15 +40,15 @@ if isinstance(a, A):
 if isinstance(a, A[str]):
     pass
 
-# This should generate an error in Python 3.9 and older
-# because unions are not allowed.
+# This should generate an error in Python 3.9 and older because
+# unions are not allowed, but this error isn't currently caught.
 if issubclass(A, Union[A, int]):
     pass
 
-# This should generate an error in Python 3.9 and older
-# because unions are not allowed. A second error will be
-# generated because the | operator isn't allowed.
-if issubclass(A, A | int):
+if issubclass(A, type(None)):
+    pass
+
+if issubclass(A, NoneType):
     pass
 
 
@@ -57,3 +73,47 @@ class ClassA(Generic[_T]):
 
         if isinstance(var, self.v2):
             pass
+
+
+def func1(exceptions: Sequence[type[BaseException]], exception: Exception):
+    return isinstance(exception, tuple(exceptions))
+
+
+if isinstance(a, Callable):
+    ...
+
+# This should generate an error because a subscripted Callable
+# will result in a runtime exception.
+if isinstance(a, Callable[[], Any]):
+    ...
+
+if isinstance(a, type(len)):
+    ...
+
+
+class TD1(TypedDict):
+    a: int
+
+
+# This should generate an error because TypedDict classes can't
+# be used in an isinstance call.
+if isinstance(a, TD1):
+    pass
+
+
+TA1 = Annotated[int, ""]
+
+# This should generate two errors because Annotated can't be used
+# in an isinstance call.
+if isinstance(1, TA1):
+    pass
+
+# This should generate an error because Any can't be used
+# in an isinstance call.
+if isinstance(1, Any):
+    pass
+
+# This should generate an error because Literal can't be used
+# in an isinstance call.
+if isinstance(1, Literal[1, 2]):
+    pass

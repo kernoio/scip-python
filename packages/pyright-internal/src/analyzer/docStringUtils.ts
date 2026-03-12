@@ -9,14 +9,12 @@
  * (https://www.python.org/dev/peps/pep-0257/).
  */
 
-// Cleans the a docstring as inspect.cleandoc does.
-export function cleanDocString(rawString: string): string {
-    return cleanAndSplitDocString(rawString).join('\n');
-}
+const docStringCrRegEx = /\r/g;
+const docStringTabRegEx = /\t/g;
 
 export function cleanAndSplitDocString(rawString: string): string[] {
     // Remove carriage returns and replace tabs.
-    const unescaped = rawString.replace(/\r/g, '').replace(/\t/g, '        ');
+    const unescaped = rawString.replace(docStringCrRegEx, '').replace(docStringTabRegEx, '        ');
 
     // Split into lines.
     const lines = unescaped.split('\n');
@@ -101,10 +99,52 @@ export function extractParameterDocumentation(functionDocString: string, paramNa
             return trimmedLine.substr(paramOffset);
         }
 
-        // Check for Google (variant 1) format
+        // Check for Google (variant 2) format
         paramOffset = trimmedLine.indexOf(paramName + ' (');
         if (paramOffset >= 0) {
             return trimmedLine.substr(paramOffset);
+        }
+    }
+
+    return undefined;
+}
+
+export function extractAttributeDocumentation(classDocString: string, attrName: string): string | undefined {
+    if (!classDocString || !attrName) {
+        return undefined;
+    }
+
+    // Python documentation styles for attributes:
+    //
+    // 1. reST:
+    //      :ivar attr1: description
+    // 2. Google:
+    //      Attributes:
+    //          attr1: description
+    // 3. Google (with type):
+    //      Attributes:
+    //          attr1 (type): description
+
+    const docStringLines = cleanAndSplitDocString(classDocString);
+    for (const line of docStringLines) {
+        const trimmedLine = line.trim();
+
+        // Check for reST format
+        let attrOffset = trimmedLine.indexOf(':ivar ' + attrName);
+        if (attrOffset >= 0) {
+            return trimmedLine.substr(attrOffset + 6);
+        }
+
+        // Check for Google (variant 1) format
+        attrOffset = trimmedLine.indexOf(attrName + ': ');
+        if (attrOffset >= 0) {
+            return trimmedLine.substr(attrOffset);
+        }
+
+        // Check for Google (variant 2) format
+        attrOffset = trimmedLine.indexOf(attrName + ' (');
+        if (attrOffset >= 0) {
+            return trimmedLine.substr(attrOffset);
         }
     }
 

@@ -1,31 +1,26 @@
 # This sample tests the handling of runtime union expressions that
 # are used in contexts other than a type annotation.
 
-from typing import Union
+from types import UnionType
+from typing import Optional, Union
 
 
-class Foo:
+class Class1:
     a: int
 
 
-class Bar:
+class Class2:
     a: int
 
 
 # This should generate an error
-a1: type[Foo] | type[Bar] = Foo | Bar
-
-print(a1.a)
-a1()
+a1: type[Class1] | type[Class2] = Class1 | Class2
 
 # This should generate an error
-a2: type[Foo] | type[Bar] = Union[Foo, Bar]
-
-print(a2.a)
-a2()
+a2: type[Class1] | type[Class2] = Union[Class1, Class2]
 
 
-b1 = Foo | Bar
+b1 = Class1 | Class2
 
 # This should generate an error
 print(b1.a)
@@ -34,10 +29,16 @@ print(b1.a)
 b1()
 
 
-b2 = Union[Foo, Bar]
+b2 = Union[Class1, Class2]
 
 # This should generate an error
 print(b2.a)
 
 # This should generate an error
 b2()
+
+
+c1: UnionType
+c1 = int | str
+c1 = Union[int, str]
+c1 = Optional[int]

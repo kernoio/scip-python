@@ -6,9 +6,13 @@
  * Provides access to the host environment the language service is running on.
  */
 
+import { CancellationToken } from 'vscode-languageserver';
+
+import { ImportLogger } from '../analyzer/importLogger';
 import { PythonPathResult } from '../analyzer/pythonPathUtils';
 import { PythonPlatform } from './configOptions';
 import { PythonVersion } from './pythonVersion';
+import { Uri } from './uri/uri';
 
 export const enum HostKind {
     FullAccess,
@@ -19,14 +23,32 @@ export const enum HostKind {
 export interface ScriptOutput {
     stdout: string;
     stderr: string;
+
+    // Optional output that contains both stdout and stderr interleaved in choronological order.
+    output?: string;
+    exitCode?: number;
 }
 
 export interface Host {
     readonly kind: HostKind;
-    getPythonSearchPaths(pythonPath?: string, logInfo?: string[]): PythonPathResult;
-    getPythonVersion(pythonPath?: string, logInfo?: string[]): PythonVersion | undefined;
-    getPythonPlatform(logInfo?: string[]): PythonPlatform | undefined;
-    runScript(pythonPath: string | undefined, script: string, args: string[], cwd: string): Promise<ScriptOutput>;
+    getPythonSearchPaths(pythonPath?: Uri, failureLogger?: ImportLogger): PythonPathResult;
+    getPythonVersion(pythonPath?: Uri, failureLogger?: ImportLogger): PythonVersion | undefined;
+    getPythonPlatform(failureLogger?: ImportLogger): PythonPlatform | undefined;
+    runScript(
+        pythonPath: Uri | undefined,
+        script: Uri,
+        args: string[],
+        cwd: Uri,
+        token: CancellationToken
+    ): Promise<ScriptOutput>;
+    runSnippet(
+        pythonPath: Uri | undefined,
+        code: string,
+        args: string[],
+        cwd: Uri,
+        token: CancellationToken,
+        forceIsolated?: boolean
+    ): Promise<ScriptOutput>;
 }
 
 export class NoAccessHost implements Host {
@@ -34,28 +56,39 @@ export class NoAccessHost implements Host {
         return HostKind.NoAccess;
     }
 
-    getPythonSearchPaths(pythonPath?: string, logInfo?: string[]): PythonPathResult {
-        logInfo?.push('No access to python executable.');
+    getPythonSearchPaths(pythonPath?: Uri, failureLogger?: ImportLogger): PythonPathResult {
+        failureLogger?.log('No access to python executable.');
 
         return {
             paths: [],
-            prefix: '',
+            prefix: undefined,
         };
     }
 
-    getPythonVersion(pythonPath?: string, logInfo?: string[]): PythonVersion | undefined {
+    getPythonVersion(pythonPath?: Uri, failureLogger?: ImportLogger): PythonVersion | undefined {
         return undefined;
     }
 
-    getPythonPlatform(logInfo?: string[]): PythonPlatform | undefined {
+    getPythonPlatform(failureLogger?: ImportLogger): PythonPlatform | undefined {
         return undefined;
     }
 
     async runScript(
-        pythonPath: string | undefined,
-        scriptPath: string,
+        pythonPath: Uri | undefined,
+        scriptPath: Uri,
         args: string[],
-        cwd: string
+        cwd: Uri,
+        token: CancellationToken
+    ): Promise<ScriptOutput> {
+        return { stdout: '', stderr: '' };
+    }
+
+    async runSnippet(
+        pythonPath: Uri | undefined,
+        code: string,
+        args: string[],
+        cwd: Uri,
+        token: CancellationToken
     ): Promise<ScriptOutput> {
         return { stdout: '', stderr: '' };
     }

@@ -9,11 +9,6 @@ import { Range } from './lsif-typescript/Range';
 import { IndexOptions } from './MainCommand';
 
 export interface ScipConfig extends IndexOptions {
-    /**
-     * The directory where to generate the index.scip file.
-     *
-     * All `Document.relative_path` fields will be relative paths to this directory.
-     */
     projectRoot: string;
 
     infer: { projectVersionFromCommit: boolean };

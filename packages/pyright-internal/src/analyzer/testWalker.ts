@@ -8,7 +8,7 @@
  */
 
 import { ParseTreeWalker } from '../analyzer/parseTreeWalker';
-import { fail } from '../common/debug';
+import { assertNever, fail } from '../common/debug';
 import { TextRange } from '../common/textRange';
 import { NameNode, ParseNode, ParseNodeArray, ParseNodeType } from '../parser/parseNodes';
 import { isCompliantWithNodeRangeRules } from './parseTreeUtils';
@@ -57,7 +57,7 @@ export class TestWalker extends ParseTreeWalker {
                         case ParseNodeType.Assignment:
                             // There are a few exceptions we need to deal with here. Comment
                             // annotations can occur outside of an assignment node's range.
-                            if (child === node.typeAnnotationComment) {
+                            if (child === node.d.annotationComment) {
                                 skipCheck = true;
                             }
 
@@ -69,13 +69,13 @@ export class TestWalker extends ParseTreeWalker {
                             break;
 
                         case ParseNodeType.StringList:
-                            if (child === node.typeAnnotation) {
+                            if (child === node.d.annotation) {
                                 skipCheck = true;
                             }
                             break;
 
                         default:
-                            fail(`node ${node.nodeType} is not marked as not following range rules.`);
+                            assertNever(node);
                     }
                 }
 
@@ -84,11 +84,14 @@ export class TestWalker extends ParseTreeWalker {
                     if (child.start < node.start || TextRange.getEnd(child) > TextRange.getEnd(node)) {
                         fail(`Child node ${child.nodeType} is not contained within its parent ${node.nodeType}`);
                     }
+
                     if (prevNode) {
                         // Make sure the child is after the previous child.
                         if (child.start < TextRange.getEnd(prevNode)) {
                             // Special-case the function annotation which can "bleed" into the suite.
-                            if (prevNode.nodeType !== ParseNodeType.FunctionAnnotation) {
+                            const exempted = prevNode.nodeType === ParseNodeType.FunctionAnnotation;
+
+                            if (!exempted) {
                                 fail(`Child node is not after previous child node`);
                             }
                         }

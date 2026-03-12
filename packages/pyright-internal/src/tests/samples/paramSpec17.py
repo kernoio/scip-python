@@ -5,30 +5,26 @@
 
 from collections.abc import Callable
 from typing import Any
-from typing_extensions import ParamSpec
+from typing_extensions import ParamSpec  # pyright: ignore[reportMissingModuleSource]
 
 P = ParamSpec("P")
 
 
-def repr_func_call(func: Callable[P, object], *args: P.args, **kwargs: P.kwargs) -> str:
+def func1(func: Callable[P, object], *args: P.args, **kwargs: P.kwargs) -> str:
     arg_reprs = [repr(arg) for arg in args]
     arg_reprs.extend(k + "=" + repr(v) for k, v in kwargs.items())
 
     return func.__name__ + "(" + ", ".join(arg_reprs) + ")"
 
 
-def print(
-    *values: object,
-    sep: str | None = ...,
-    end: str | None = ...,
-) -> None: ...
-
-repr_func_call(print)
+def func2(*values: object, sep: str | None = ..., end: str | None = ...) -> None: ...
 
 
-def add_values(a: int, b: int):
-    ...
+func1(func2)
 
 
-def foo(*args: Any, **kwargs: Any):
-    repr_func_call(add_values, *args, **kwargs)
+def func3(a: int, b: int): ...
+
+
+def func4(*args: Any, **kwargs: Any):
+    func1(func3, *args, **kwargs)

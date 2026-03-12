@@ -10,10 +10,8 @@
  * Converts a Python program text stream into a stream of tokens.
  */
 
-import Char from 'typescript-char';
-
-import { isWhitespace } from '../analyzer/parseTreeUtils';
-import { IPythonMode } from '../analyzer/sourceFile';
+import { Char } from '../common/charCodes';
+import { cloneStr } from '../common/core';
 import { TextRange } from '../common/textRange';
 import { TextRangeCollection } from '../common/textRangeCollection';
 import {
@@ -30,6 +28,9 @@ import {
     Comment,
     CommentType,
     DedentToken,
+    FStringEndToken,
+    FStringMiddleToken,
+    FStringStartToken,
     IdentifierToken,
     IndentToken,
     KeywordToken,
@@ -89,6 +90,8 @@ const _keywords: Map<string, KeywordType> = new Map([
     ['True', KeywordType.True],
 ]);
 
+const _softKeywords = new Set(['match', 'case', 'type']);
+
 const _operatorInfo: { [key: number]: OperatorFlags } = {
     [OperatorType.Add]: OperatorFlags.Unary | OperatorFlags.Binary,
     [OperatorType.AddEqual]: OperatorFlags.Assignment,
@@ -137,9 +140,11 @@ const _operatorInfo: { [key: number]: OperatorFlags } = {
 
 const _byteOrderMarker = 0xfeff;
 
-const _maxStringTokenLength = 32 * 1024;
-
-export const defaultTabSize = 8;
+const defaultTabSize = 8;
+const magicsRegEx = /\\\s*$/;
+const typeIgnoreCommentRegEx = /((^|#)\s*)type:\s*ignore(\s*\[([\s\w-,]*)\]|\s|$)/;
+const pyrightIgnoreCommentRegEx = /((^|#)\s*)pyright:\s*ignore(\s*\[([\s\w-,]*)\]|\s|$)/;
+const underscoreRegEx = /_/g;
 
 export interface TokenizerOutput {
     // List of all tokens.
@@ -159,6 +164,10 @@ export interface TokenizerOutput {
 
     // Line-end sequence ('/n', '/r', or '/r/n').
     predominantEndOfLineSequence: string;
+
+    // True if the tokenizer was able to identify the file's predominant
+    // tab sequence. False if predominantTabSequence is set to our default.
+    hasPredominantTabSequence: boolean;
 
     // Tab sequence ('/t or consecutive spaces).
     predominantTabSequence: string;
@@ -190,6 +199,23 @@ export interface IgnoreComment {
     rulesList: IgnoreCommentRule[] | undefined;
 }
 
+interface FStringReplacementFieldContext {
+    inFormatSpecifier: boolean;
+    parenDepth: number;
+}
+
+interface FStringContext {
+    startToken: FStringStartToken;
+    replacementFieldStack: FStringReplacementFieldContext[];
+    activeReplacementField?: FStringReplacementFieldContext;
+}
+
+enum MagicsKind {
+    None,
+    Line,
+    Cell,
+}
+
 export class Tokenizer {
     private _cs = new CharacterStream('');
     private _tokens: Token[] = [];
@@ -201,6 +227,8 @@ export class Tokenizer {
     private _typeIgnoreLines = new Map<number, IgnoreComment>();
     private _pyrightIgnoreLines = new Map<number, IgnoreComment>();
     private _comments: Comment[] | undefined;
+    private _fStringStack: FStringContext[] = [];
+    private _activeFString: FStringContext | undefined;
 
     // Total times CR, CR/LF, and LF are used to terminate
     // lines. Used to determine the predominant line ending.
@@ -224,15 +252,20 @@ export class Tokenizer {
     private _singleQuoteCount = 0;
     private _doubleQuoteCount = 0;
 
-    // ipython mode
-    private _ipythonMode = IPythonMode.None;
+    // Assume Jupyter notebook tokenization rules?
+    private _useNotebookMode = false;
+
+    // Intern identifier strings within a single tokenization pass. This reduces
+    // per-identifier allocations while still ensuring we don't retain substrings
+    // that reference the original source text.
+    private readonly _identifierInternedStrings = new Map<string, string>();
 
     tokenize(
         text: string,
         start?: number,
         length?: number,
         initialParenDepth = 0,
-        ipythonMode = IPythonMode.None
+        useNotebookMode = false
     ): TokenizerOutput {
         if (start === undefined) {
             start = 0;
@@ -245,7 +278,7 @@ export class Tokenizer {
         } else if (length < 0 || start + length > text.length) {
             throw new Error(`Invalid range length (start=${start}, length=${length}, text.length=${text.length})`);
         } else if (start + length < text.length) {
-            text = text.substring(0, start + length);
+            text = text.slice(0, start + length);
         }
 
         this._cs = new CharacterStream(text);
@@ -255,7 +288,8 @@ export class Tokenizer {
         this._parenDepth = initialParenDepth;
         this._lineRanges = [];
         this._indentAmounts = [];
-        this._ipythonMode = ipythonMode;
+        this._useNotebookMode = useNotebookMode;
+        this._identifierInternedStrings.clear();
 
         const end = start + length;
 
@@ -271,9 +305,23 @@ export class Tokenizer {
             }
         }
 
+        // Insert any implied FStringEnd tokens.
+        while (this._activeFString) {
+            this._tokens.push(
+                FStringEndToken.create(
+                    this._cs.position,
+                    0,
+                    this._activeFString.startToken.flags | StringTokenFlags.Unterminated
+                )
+            );
+            this._activeFString = this._fStringStack.pop();
+        }
+
         // Insert an implied new line to make parsing easier.
         if (this._tokens.length === 0 || this._tokens[this._tokens.length - 1].type !== TokenType.NewLine) {
-            this._tokens.push(NewLineToken.create(this._cs.position, 0, NewLineType.Implied, this._getComments()));
+            if (this._parenDepth === 0) {
+                this._tokens.push(NewLineToken.create(this._cs.position, 0, NewLineType.Implied, this._getComments()));
+            }
         }
 
         // Insert any implied dedent tokens.
@@ -285,6 +333,15 @@ export class Tokenizer {
         // Add the final line range.
         this._addLineRange();
 
+        // If the last line ended in a line-end character, add an empty line.
+        if (this._lineRanges.length > 0) {
+            const lastLine = this._lineRanges[this._lineRanges.length - 1];
+            const lastCharOfLastLine = text.charCodeAt(lastLine.start + lastLine.length - 1);
+            if (lastCharOfLastLine === Char.CarriageReturn || lastCharOfLastLine === Char.LineFeed) {
+                this._lineRanges.push({ start: this._cs.position, length: 0 });
+            }
+        }
+
         let predominantEndOfLineSequence = '\n';
         if (this._crCount > this._crLfCount && this._crCount > this._lfCount) {
             predominantEndOfLineSequence = '\r';
@@ -293,11 +350,14 @@ export class Tokenizer {
         }
 
         let predominantTabSequence = '    ';
+        let hasPredominantTabSequence = false;
         // If more than half of the indents use tab sequences,
         // assume we're using tabs rather than spaces.
         if (this._indentTabCount > this._indentCount / 2) {
+            hasPredominantTabSequence = true;
             predominantTabSequence = '\t';
         } else if (this._indentCount > 0) {
+            hasPredominantTabSequence = true;
             // Compute the average number of spaces per indent
             // to estimate the predominant tab value.
             let averageSpacePerIndent = Math.round(this._indentSpacesTotal / this._indentCount);
@@ -319,6 +379,7 @@ export class Tokenizer {
             typeIgnoreAll: this._typeIgnoreAll,
             pyrightIgnoreLines: this._pyrightIgnoreLines,
             predominantEndOfLineSequence,
+            hasPredominantTabSequence,
             predominantTabSequence,
             predominantSingleQuoteCharacter: this._singleQuoteCount >= this._doubleQuoteCount ? "'" : '"',
         };
@@ -326,6 +387,33 @@ export class Tokenizer {
 
     static getOperatorInfo(operatorType: OperatorType): OperatorFlags {
         return _operatorInfo[operatorType];
+    }
+
+    static isWhitespace(token: Token) {
+        return token.type === TokenType.NewLine || token.type === TokenType.Indent || token.type === TokenType.Dedent;
+    }
+
+    static isPythonKeyword(name: string, includeSoftKeywords = false): boolean {
+        const keyword = _keywords.get(name);
+        if (!keyword) {
+            return false;
+        }
+
+        if (includeSoftKeywords) {
+            return true;
+        }
+
+        return !_softKeywords.has(name);
+    }
+
+    static isPythonIdentifier(value: string) {
+        for (let i = 0; i < value.length; i++) {
+            if (i === 0 ? !isIdentifierStartChar(value.charCodeAt(i)) : !isIdentifierChar(value.charCodeAt(i))) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     static isOperatorAssignment(operatorType?: OperatorType): boolean {
@@ -343,7 +431,16 @@ export class Tokenizer {
     }
 
     private _addNextToken(): void {
-        this._cs.skipWhitespace();
+        // Are we in the middle of an f-string but not in a replacement field?
+        if (
+            this._activeFString &&
+            (!this._activeFString.activeReplacementField ||
+                this._activeFString.activeReplacementField.inFormatSpecifier)
+        ) {
+            this._handleFStringMiddle();
+        } else {
+            this._cs.skipWhitespace();
+        }
 
         if (this._cs.isEndOfStream()) {
             return;
@@ -354,6 +451,9 @@ export class Tokenizer {
         }
     }
 
+    // Consumes one or more characters from the character stream and pushes
+    // tokens onto the token list. Returns true if the caller should advance
+    // to the next character.
     private _handleCharacter(): boolean {
         // f-strings, b-strings, etc
         const stringPrefixLength = this._getStringPrefixLength();
@@ -361,7 +461,7 @@ export class Tokenizer {
         if (stringPrefixLength >= 0) {
             let stringPrefix = '';
             if (stringPrefixLength > 0) {
-                stringPrefix = this._cs.getText().substring(this._cs.position, this._cs.position + stringPrefixLength);
+                stringPrefix = this._cs.getText().slice(this._cs.position, this._cs.position + stringPrefixLength);
                 // Indeed a string
                 this._cs.advance(stringPrefixLength);
             }
@@ -378,16 +478,16 @@ export class Tokenizer {
             return true;
         }
 
-        if (this._ipythonMode) {
+        if (this._useNotebookMode) {
             const kind = this._getIPythonMagicsKind();
-            if (kind === 'line') {
+            if (kind === MagicsKind.Line) {
                 this._handleIPythonMagics(
                     this._cs.currentChar === Char.Percent ? CommentType.IPythonMagic : CommentType.IPythonShellEscape
                 );
                 return true;
             }
 
-            if (kind === 'cell') {
+            if (kind === MagicsKind.Cell) {
                 this._handleIPythonMagics(
                     this._cs.currentChar === Char.Percent
                         ? CommentType.IPythonCellMagic
@@ -420,18 +520,39 @@ export class Tokenizer {
 
             case Char.Backslash: {
                 if (this._cs.nextChar === Char.CarriageReturn) {
-                    if (this._cs.lookAhead(2) === Char.LineFeed) {
-                        this._cs.advance(3);
-                    } else {
-                        this._cs.advance(2);
+                    const advance = this._cs.lookAhead(2) === Char.LineFeed ? 3 : 2;
+
+                    // If a line continuation (\\ + CR[LF]) appears at EOF, it's an error.
+                    if (this._cs.position + advance >= this._cs.length) {
+                        return this._handleInvalid();
                     }
+
+                    this._cs.advance(advance);
                     this._addLineRange();
-                    return true;
-                } else if (this._cs.nextChar === Char.LineFeed) {
-                    this._cs.advance(2);
-                    this._addLineRange();
+
+                    if (this._tokens.length > 0 && this._tokens[this._tokens.length - 1].type === TokenType.NewLine) {
+                        this._readIndentationAfterNewLine();
+                    }
                     return true;
                 }
+
+                if (this._cs.nextChar === Char.LineFeed) {
+                    const advance = 2;
+
+                    // If a line continuation (\\ + LF) appears at EOF, it's an error.
+                    if (this._cs.position + advance >= this._cs.length) {
+                        return this._handleInvalid();
+                    }
+
+                    this._cs.advance(advance);
+                    this._addLineRange();
+
+                    if (this._tokens.length > 0 && this._tokens[this._tokens.length - 1].type === TokenType.NewLine) {
+                        this._readIndentationAfterNewLine();
+                    }
+                    return true;
+                }
+
                 return this._handleInvalid();
             }
 
@@ -466,10 +587,37 @@ export class Tokenizer {
             case Char.OpenBrace: {
                 this._parenDepth++;
                 this._tokens.push(Token.create(TokenType.OpenCurlyBrace, this._cs.position, 1, this._getComments()));
+
+                if (this._activeFString) {
+                    // Are we starting a new replacement field?
+                    if (
+                        !this._activeFString.activeReplacementField ||
+                        this._activeFString.activeReplacementField.inFormatSpecifier
+                    ) {
+                        // If there is already an active replacement field, push it
+                        // on the stack so we can pop it later.
+                        if (this._activeFString.activeReplacementField) {
+                            this._activeFString.replacementFieldStack.push(this._activeFString.activeReplacementField);
+                        }
+
+                        // Create a new active replacement field context.
+                        this._activeFString.activeReplacementField = {
+                            inFormatSpecifier: false,
+                            parenDepth: this._parenDepth,
+                        };
+                    }
+                }
                 break;
             }
 
             case Char.CloseBrace: {
+                if (
+                    this._activeFString &&
+                    this._activeFString.activeReplacementField?.parenDepth === this._parenDepth
+                ) {
+                    this._activeFString.activeReplacementField = this._activeFString.replacementFieldStack.pop();
+                }
+
                 if (this._parenDepth > 0) {
                     this._parenDepth--;
                 }
@@ -494,13 +642,27 @@ export class Tokenizer {
 
             case Char.Colon: {
                 if (this._cs.nextChar === Char.Equal) {
-                    this._tokens.push(
-                        OperatorToken.create(this._cs.position, 2, OperatorType.Walrus, this._getComments())
-                    );
-                    this._cs.advance(1);
-                    break;
+                    if (
+                        !this._activeFString ||
+                        !this._activeFString.activeReplacementField ||
+                        this._activeFString.activeReplacementField.parenDepth !== this._parenDepth
+                    ) {
+                        this._tokens.push(
+                            OperatorToken.create(this._cs.position, 2, OperatorType.Walrus, this._getComments())
+                        );
+                        this._cs.advance(1);
+                        break;
+                    }
                 }
+
                 this._tokens.push(Token.create(TokenType.Colon, this._cs.position, 1, this._getComments()));
+
+                if (
+                    this._activeFString?.activeReplacementField &&
+                    this._parenDepth === this._activeFString.activeReplacementField.parenDepth
+                ) {
+                    this._activeFString.activeReplacementField.inFormatSpecifier = true;
+                }
                 break;
             }
 
@@ -595,15 +757,15 @@ export class Tokenizer {
                     this._cs.moveNext();
                     break;
 
-                default:
-                    // Non-blank line. Set the current indent level.
-                    this._setIndent(startOffset, tab1Spaces, tab8Spaces, isSpacePresent, isTabPresent);
-                    return;
-
                 case Char.Hash:
                 case Char.LineFeed:
                 case Char.CarriageReturn:
                     // Blank line -- no need to adjust indentation.
+                    return;
+
+                default:
+                    // Non-blank line. Set the current indent level.
+                    this._setIndent(startOffset, tab1Spaces, tab8Spaces, isSpacePresent, isTabPresent);
                     return;
             }
         }
@@ -748,17 +910,27 @@ export class Tokenizer {
         }
 
         if (this._cs.position > start) {
-            const value = this._cs.getText().substring(start, this._cs.position);
-            if (_keywords.has(value)) {
+            const value = this._cs.getText().slice(start, this._cs.position);
+            const keywordType = _keywords.get(value);
+            if (keywordType !== undefined) {
                 this._tokens.push(
-                    KeywordToken.create(start, this._cs.position - start, _keywords.get(value)!, this._getComments())
+                    KeywordToken.create(start, this._cs.position - start, keywordType, this._getComments())
                 );
             } else {
-                this._tokens.push(IdentifierToken.create(start, this._cs.position - start, value, this._getComments()));
+                const internedValue = this._identifierInternedStrings.get(value) ?? this._internIdentifierString(value);
+                this._tokens.push(
+                    IdentifierToken.create(start, this._cs.position - start, internedValue, this._getComments())
+                );
             }
             return true;
         }
         return false;
+    }
+
+    private _internIdentifierString(value: string) {
+        const clonedValue = cloneStr(value);
+        this._identifierInternedStrings.set(clonedValue, clonedValue);
+        return clonedValue;
     }
 
     private _isPossibleNumber(): boolean {
@@ -814,9 +986,9 @@ export class Tokenizer {
             }
 
             if (radix > 0) {
-                const text = this._cs.getText().substring(start, this._cs.position);
-                const simpleIntText = text.replace(/_/g, '');
-                let intValue: number | bigint = parseInt(simpleIntText.substring(leadingChars), radix);
+                const text = this._cs.getText().slice(start, this._cs.position);
+                const simpleIntText = text.replace(underscoreRegEx, '');
+                let intValue: number | bigint = parseInt(simpleIntText.slice(leadingChars), radix);
 
                 if (!isNaN(intValue)) {
                     const bigIntValue = BigInt(simpleIntText);
@@ -867,8 +1039,8 @@ export class Tokenizer {
         }
 
         if (isDecimalInteger) {
-            let text = this._cs.getText().substring(start, this._cs.position);
-            const simpleIntText = text.replace(/_/g, '');
+            let text = this._cs.getText().slice(start, this._cs.position);
+            const simpleIntText = text.replace(underscoreRegEx, '');
             let intValue: number | bigint = parseInt(simpleIntText, 10);
 
             if (!isNaN(intValue)) {
@@ -903,7 +1075,7 @@ export class Tokenizer {
             (this._cs.currentChar === Char.Period && this._cs.nextChar >= Char._0 && this._cs.nextChar <= Char._9)
         ) {
             if (this._skipFloatingPointCandidate()) {
-                let text = this._cs.getText().substring(start, this._cs.position);
+                let text = this._cs.getText().slice(start, this._cs.position);
                 const value = parseFloat(text);
                 if (!isNaN(value)) {
                     let isImaginary = false;
@@ -958,12 +1130,32 @@ export class Tokenizer {
                 break;
 
             case Char.Equal:
+                if (
+                    this._activeFString?.activeReplacementField &&
+                    this._activeFString?.activeReplacementField.parenDepth === this._parenDepth &&
+                    !this._activeFString.activeReplacementField.inFormatSpecifier &&
+                    nextChar !== Char.Equal
+                ) {
+                    length = 1;
+                    operatorType = OperatorType.Assign;
+                    break;
+                }
+
                 length = nextChar === Char.Equal ? 2 : 1;
                 operatorType = length === 2 ? OperatorType.Equals : OperatorType.Assign;
                 break;
 
             case Char.ExclamationMark:
                 if (nextChar !== Char.Equal) {
+                    if (this._activeFString) {
+                        // Handle the conversion separator (!) within an f-string.
+                        this._tokens.push(
+                            Token.create(TokenType.ExclamationMark, this._cs.position, 1, this._getComments())
+                        );
+                        this._cs.advance(1);
+                        return true;
+                    }
+
                     return false;
                 }
                 length = 2;
@@ -1080,56 +1272,55 @@ export class Tokenizer {
         return prevComments;
     }
 
-    private _getIPythonMagicsKind(): 'line' | 'cell' | undefined {
-        if (!isMagicChar(this._cs.currentChar)) {
-            return undefined;
+    private _getIPythonMagicsKind(): MagicsKind {
+        const curChar = this._cs.currentChar;
+        if (curChar !== Char.Percent && curChar !== Char.ExclamationMark) {
+            return MagicsKind.None;
         }
 
         const prevToken = this._tokens.length > 0 ? this._tokens[this._tokens.length - 1] : undefined;
-        if (prevToken !== undefined && !isWhitespace(prevToken)) {
-            return undefined;
+        if (prevToken !== undefined && !Tokenizer.isWhitespace(prevToken)) {
+            return MagicsKind.None;
         }
 
-        if (this._cs.nextChar === this._cs.currentChar) {
+        if (this._cs.nextChar === curChar) {
             // Eat up next magic char.
             this._cs.moveNext();
-            return 'cell';
+            return MagicsKind.Cell;
         }
 
-        return 'line';
-
-        function isMagicChar(ch: number) {
-            return ch === Char.Percent || ch === Char.ExclamationMark;
-        }
+        return MagicsKind.Line;
     }
 
     private _handleIPythonMagics(type: CommentType): void {
         const start = this._cs.position + 1;
 
         let begin = start;
-        do {
+        while (true) {
             this._cs.skipToEol();
 
             if (type === CommentType.IPythonMagic || type === CommentType.IPythonShellEscape) {
                 const length = this._cs.position - begin;
-                const value = this._cs.getText().substring(begin, begin + length);
+                const value = this._cs.getText().slice(begin, begin + length);
 
                 // is it multiline magics?
                 // %magic command \
                 //        next arguments
-                if (!value.match(/\\\s*$/)) {
+                if (!value.match(magicsRegEx)) {
                     break;
                 }
             }
 
             this._cs.moveNext();
             begin = this._cs.position + 1;
-        } while (!this._cs.isEndOfStream());
+
+            if (this._cs.isEndOfStream()) {
+                break;
+            }
+        }
 
         const length = this._cs.position - start;
-        const value = this._cs.getText().substring(start, start + length);
-
-        const comment = Comment.create(start, length, value, type);
+        const comment = Comment.create(start, length, this._cs.getText().slice(start, start + length), type);
         this._addComments(comment);
     }
 
@@ -1138,10 +1329,9 @@ export class Tokenizer {
         this._cs.skipToEol();
 
         const length = this._cs.position - start;
-        const value = this._cs.getText().substring(start, start + length);
-        const comment = Comment.create(start, length, value);
+        const comment = Comment.create(start, length, this._cs.getText().slice(start, start + length));
 
-        const typeIgnoreRegexMatch = value.match(/((^|#)\s*)type:\s*ignore(\s*\[([\s*\w-,]*)\]|\s|$)/);
+        const typeIgnoreRegexMatch = comment.value.match(typeIgnoreCommentRegEx);
         if (typeIgnoreRegexMatch) {
             const commentStart = start + (typeIgnoreRegexMatch.index ?? 0);
             const textRange: TextRange = {
@@ -1160,7 +1350,7 @@ export class Tokenizer {
             }
         }
 
-        const pyrightIgnoreRegexMatch = value.match(/((^|#)\s*)pyright:\s*ignore(\s*\[([\s*\w-,]*)\]|\s|$)/);
+        const pyrightIgnoreRegexMatch = comment.value.match(pyrightIgnoreCommentRegEx);
         if (pyrightIgnoreRegexMatch) {
             const commentStart = start + (pyrightIgnoreRegexMatch.index ?? 0);
             const textRange: TextRange = {
@@ -1195,7 +1385,7 @@ export class Tokenizer {
             if (endTrimmed.length > 0) {
                 commentRules.push({
                     range: { start: currentOffset, length: endTrimmed.length },
-                    text: endTrimmed,
+                    text: cloneStr(endTrimmed),
                 });
             }
 
@@ -1229,6 +1419,8 @@ export class Tokenizer {
                 case Char.B:
                 case Char.u:
                 case Char.U:
+                case Char.t:
+                case Char.T:
                     // Single-char prefix like u"" or r""
                     return 1;
                 default:
@@ -1239,13 +1431,13 @@ export class Tokenizer {
         if (this._cs.lookAhead(2) === Char.SingleQuote || this._cs.lookAhead(2) === Char.DoubleQuote) {
             const prefix = this._cs
                 .getText()
-                .substring(this._cs.position, this._cs.position + 2)
+                .slice(this._cs.position, this._cs.position + 2)
                 .toLowerCase();
             switch (prefix) {
                 case 'rf':
                 case 'fr':
-                case 'ur':
-                case 'ru':
+                case 'rt':
+                case 'tr':
                 case 'br':
                 case 'rb':
                     return 2;
@@ -1277,6 +1469,10 @@ export class Tokenizer {
                 case 'f':
                     flags |= StringTokenFlags.Format;
                     break;
+
+                case 't':
+                    flags |= StringTokenFlags.Template;
+                    break;
             }
         }
 
@@ -1298,78 +1494,225 @@ export class Tokenizer {
     private _handleString(flags: StringTokenFlags, stringPrefixLength: number): void {
         const start = this._cs.position - stringPrefixLength;
 
-        if (flags & StringTokenFlags.Triplicate) {
-            this._cs.advance(3);
-        } else {
-            this._cs.moveNext();
-
-            if (flags & StringTokenFlags.SingleQuote) {
-                this._singleQuoteCount++;
+        if (flags & (StringTokenFlags.Format | StringTokenFlags.Template)) {
+            if (flags & StringTokenFlags.Triplicate) {
+                this._cs.advance(3);
             } else {
-                this._doubleQuoteCount++;
+                this._cs.moveNext();
             }
-        }
 
-        const stringLiteralInfo = this._skipToEndOfStringLiteral(flags);
+            const end = this._cs.position;
 
-        const end = this._cs.position;
-
-        this._tokens.push(
-            StringToken.create(
+            const fStringStartToken = FStringStartToken.create(
                 start,
                 end - start,
-                stringLiteralInfo.flags,
-                stringLiteralInfo.escapedValue,
+                flags,
                 stringPrefixLength,
                 this._getComments()
-            )
-        );
+            );
+
+            // Create a new f-string context and push it on the stack.
+            const fStringContext: FStringContext = {
+                startToken: fStringStartToken,
+                replacementFieldStack: [],
+            };
+
+            if (this._activeFString) {
+                this._fStringStack.push(this._activeFString);
+            }
+            this._activeFString = fStringContext;
+
+            this._tokens.push(fStringStartToken);
+        } else {
+            if (flags & StringTokenFlags.Triplicate) {
+                this._cs.advance(3);
+            } else {
+                this._cs.moveNext();
+
+                if (flags & StringTokenFlags.SingleQuote) {
+                    this._singleQuoteCount++;
+                } else {
+                    this._doubleQuoteCount++;
+                }
+            }
+
+            const stringLiteralInfo = this._skipToEndOfStringLiteral(flags);
+            const end = this._cs.position;
+
+            // If this is an unterminated string, see if it matches the string type
+            // of an active f-string. If so, we'll treat it as an f-string end
+            // token rather than an unterminated regular string. This helps with
+            // parse error recovery if a closing bracket is missing in an f-string.
+            if (
+                (stringLiteralInfo.flags & StringTokenFlags.Unterminated) !== 0 &&
+                this._activeFString?.activeReplacementField
+            ) {
+                if (
+                    (flags &
+                        (StringTokenFlags.Bytes |
+                            StringTokenFlags.Unicode |
+                            StringTokenFlags.Raw |
+                            StringTokenFlags.Format |
+                            StringTokenFlags.Template)) ===
+                    0
+                ) {
+                    const quoteTypeMask =
+                        StringTokenFlags.Triplicate | StringTokenFlags.DoubleQuote | StringTokenFlags.SingleQuote;
+                    if ((this._activeFString.startToken.flags & quoteTypeMask) === (flags & quoteTypeMask)) {
+                        // Unwind to the start of this string token and terminate any replacement fields
+                        // that are active. This will cause the tokenizer to re-process the quote as an
+                        // FStringEnd token.
+                        this._cs.position = start;
+                        while (this._activeFString.replacementFieldStack.length > 0) {
+                            this._activeFString.activeReplacementField =
+                                this._activeFString.replacementFieldStack.pop();
+                        }
+                        this._parenDepth = this._activeFString.activeReplacementField!.parenDepth - 1;
+                        this._activeFString.activeReplacementField = undefined;
+                        return;
+                    }
+                }
+            }
+
+            this._tokens.push(
+                StringToken.create(
+                    start,
+                    end - start,
+                    stringLiteralInfo.flags,
+                    stringLiteralInfo.escapedValue,
+                    stringPrefixLength,
+                    this._getComments()
+                )
+            );
+        }
     }
 
-    private _skipToEndOfStringLiteral(flags: StringTokenFlags): StringScannerOutput {
+    // Scans for either the FString end token or a replacement field.
+    private _handleFStringMiddle(): void {
+        const activeFString = this._activeFString!;
+        const inFormatSpecifier = !!this._activeFString!.activeReplacementField?.inFormatSpecifier;
+        const start = this._cs.position;
+        const flags = activeFString.startToken.flags;
+        const stringLiteralInfo = this._skipToEndOfStringLiteral(flags, inFormatSpecifier);
+        const end = this._cs.position;
+
+        const isUnterminated = (stringLiteralInfo.flags & StringTokenFlags.Unterminated) !== 0;
+        const sawReplacementFieldStart = (stringLiteralInfo.flags & StringTokenFlags.ReplacementFieldStart) !== 0;
+        const sawReplacementFieldEnd = (stringLiteralInfo.flags & StringTokenFlags.ReplacementFieldEnd) !== 0;
+        const sawEndQuote = !isUnterminated && !sawReplacementFieldStart && !sawReplacementFieldEnd;
+
+        let middleTokenLength = end - start;
+        if (sawEndQuote) {
+            middleTokenLength -= activeFString.startToken.quoteMarkLength;
+        }
+
+        if (middleTokenLength > 0 || isUnterminated) {
+            this._tokens.push(
+                FStringMiddleToken.create(
+                    start,
+                    middleTokenLength,
+                    stringLiteralInfo.flags,
+                    stringLiteralInfo.escapedValue
+                )
+            );
+        }
+
+        if (sawEndQuote) {
+            this._tokens.push(
+                FStringEndToken.create(
+                    start + middleTokenLength,
+                    activeFString.startToken.quoteMarkLength,
+                    stringLiteralInfo.flags
+                )
+            );
+
+            this._activeFString = this._fStringStack.pop();
+        } else if (isUnterminated) {
+            this._activeFString = this._fStringStack.pop();
+        }
+    }
+
+    private _skipToEndOfStringLiteral(flags: StringTokenFlags, inFormatSpecifier = false): StringScannerOutput {
         const quoteChar = flags & StringTokenFlags.SingleQuote ? Char.SingleQuote : Char.DoubleQuote;
         const isTriplicate = (flags & StringTokenFlags.Triplicate) !== 0;
-        let escapedValueParts: number[] = [];
+        const isFString = (flags & (StringTokenFlags.Format | StringTokenFlags.Template)) !== 0;
+        let isInNamedUnicodeEscape = false;
+        const start = this._cs.position;
+        let escapedValueLength = 0;
+        const getEscapedValue = () => cloneStr(this._cs.getText().slice(start, start + escapedValueLength));
 
         while (true) {
             if (this._cs.isEndOfStream()) {
                 // Hit the end of file without a termination.
                 flags |= StringTokenFlags.Unterminated;
-                return { escapedValue: String.fromCharCode.apply(undefined, escapedValueParts), flags };
+                return {
+                    escapedValue: getEscapedValue(),
+                    flags,
+                };
             }
 
             if (this._cs.currentChar === Char.Backslash) {
-                escapedValueParts.push(this._cs.currentChar);
+                escapedValueLength++;
 
                 // Move past the escape (backslash) character.
                 this._cs.moveNext();
 
-                if (this._cs.getCurrentChar() === Char.CarriageReturn || this._cs.getCurrentChar() === Char.LineFeed) {
-                    if (this._cs.getCurrentChar() === Char.CarriageReturn && this._cs.nextChar === Char.LineFeed) {
-                        escapedValueParts.push(this._cs.currentChar);
-                        this._cs.moveNext();
-                    }
-                    escapedValueParts.push(this._cs.currentChar);
-                    this._cs.moveNext();
-                    this._addLineRange();
+                // Handle the special escape sequence /N{name} for unicode characters.
+                if (
+                    !isInNamedUnicodeEscape &&
+                    this._cs.getCurrentChar() === Char.N &&
+                    this._cs.nextChar === Char.OpenBrace
+                ) {
+                    flags |= StringTokenFlags.NamedUnicodeEscape;
+                    isInNamedUnicodeEscape = true;
                 } else {
-                    escapedValueParts.push(this._cs.currentChar);
-                    this._cs.moveNext();
+                    // If this is an f-string, the only escapes that are allowed is for
+                    // a single or double quote symbol or a newline/carriage return.
+                    const isEscapedQuote =
+                        this._cs.getCurrentChar() === Char.SingleQuote ||
+                        this._cs.getCurrentChar() === Char.DoubleQuote;
+                    const isEscapedNewLine =
+                        this._cs.getCurrentChar() === Char.CarriageReturn ||
+                        this._cs.getCurrentChar() === Char.LineFeed;
+                    const isEscapedBackslash = this._cs.getCurrentChar() === Char.Backslash;
+
+                    if (!isFString || isEscapedBackslash || isEscapedQuote || isEscapedNewLine) {
+                        if (isEscapedNewLine) {
+                            if (
+                                this._cs.getCurrentChar() === Char.CarriageReturn &&
+                                this._cs.nextChar === Char.LineFeed
+                            ) {
+                                escapedValueLength++;
+                                this._cs.moveNext();
+                            }
+                            escapedValueLength++;
+                            this._cs.moveNext();
+                            this._addLineRange();
+                        } else {
+                            escapedValueLength++;
+                            this._cs.moveNext();
+                        }
+                    }
                 }
             } else if (this._cs.currentChar === Char.LineFeed || this._cs.currentChar === Char.CarriageReturn) {
                 if (!isTriplicate) {
-                    // Unterminated single-line string
-                    flags |= StringTokenFlags.Unterminated;
-                    return { escapedValue: String.fromCharCode.apply(undefined, escapedValueParts), flags };
+                    if (!isFString || !this._activeFString?.activeReplacementField) {
+                        // Unterminated single-line string
+                        flags |= StringTokenFlags.Unterminated;
+                        return {
+                            escapedValue: getEscapedValue(),
+                            flags,
+                        };
+                    }
                 }
 
                 // Skip over the new line (either one or two characters).
                 if (this._cs.currentChar === Char.CarriageReturn && this._cs.nextChar === Char.LineFeed) {
-                    escapedValueParts.push(this._cs.currentChar);
+                    escapedValueLength++;
                     this._cs.moveNext();
                 }
 
-                escapedValueParts.push(this._cs.currentChar);
+                escapedValueLength++;
                 this._cs.moveNext();
                 this._addLineRange();
             } else if (!isTriplicate && this._cs.currentChar === quoteChar) {
@@ -1383,22 +1726,40 @@ export class Tokenizer {
             ) {
                 this._cs.advance(3);
                 break;
+            } else if (!isInNamedUnicodeEscape && isFString && this._cs.currentChar === Char.OpenBrace) {
+                if (inFormatSpecifier || this._cs.nextChar !== Char.OpenBrace) {
+                    flags |= StringTokenFlags.ReplacementFieldStart;
+                    break;
+                } else {
+                    escapedValueLength++;
+                    this._cs.moveNext();
+                    escapedValueLength++;
+                    this._cs.moveNext();
+                }
+            } else if (isInNamedUnicodeEscape && this._cs.currentChar === Char.CloseBrace) {
+                isInNamedUnicodeEscape = false;
+                escapedValueLength++;
+                this._cs.moveNext();
+            } else if (isFString && this._cs.currentChar === Char.CloseBrace) {
+                if (inFormatSpecifier || this._cs.nextChar !== Char.CloseBrace) {
+                    flags |= StringTokenFlags.ReplacementFieldEnd;
+                    break;
+                } else {
+                    escapedValueLength++;
+                    this._cs.moveNext();
+                    escapedValueLength++;
+                    this._cs.moveNext();
+                }
             } else {
-                escapedValueParts.push(this._cs.currentChar);
+                escapedValueLength++;
                 this._cs.moveNext();
             }
         }
 
-        // String.fromCharCode.apply crashes (stack overflow) if passed an array
-        // that is too long. Cut off the extra characters in this case to avoid
-        // the crash. It's unlikely that the full string value will be used as
-        // a string literal, an f-string, or a docstring, so this should be fine.
-        if (escapedValueParts.length > _maxStringTokenLength) {
-            escapedValueParts = escapedValueParts.slice(0, _maxStringTokenLength);
-            flags |= StringTokenFlags.ExceedsMaxSize;
-        }
-
-        return { escapedValue: String.fromCharCode.apply(undefined, escapedValueParts), flags };
+        return {
+            escapedValue: getEscapedValue(),
+            flags,
+        };
     }
 
     private _skipFloatingPointCandidate(): boolean {

@@ -9,6 +9,7 @@
  * in the program.
  */
 
+import { NameNode } from '../parser/parseNodes';
 import { Declaration, DeclarationType } from './declaration';
 import { areDeclarationsSame, hasTypeForDeclaration } from './declarationUtils';
 import { Type } from './types';
@@ -32,12 +33,18 @@ export const enum SymbolFlags {
     // Indicates that the symbol is an instance member of a class.
     InstanceMember = 1 << 3,
 
+    // Indicates that the symbol is specified in the __slots__
+    // declaration of a class. Such symbols act like instance members
+    // in some respects but are actually implemented as class members
+    // using descriptor objects.
+    SlotsMember = 1 << 4,
+
     // Indicates that the symbol is considered "private" to the
     // class or module and should not be accessed outside or overridden.
     PrivateMember = 1 << 5,
 
     // Indicates that the symbol is not considered for protocol
-    // matching. This applies to some built-in symbols like __class__.
+    // matching. This applies to some built-in symbols like __module__.
     IgnoredForProtocolMatch = 1 << 6,
 
     // Indicates that the symbol is a ClassVar, so it cannot be
@@ -57,6 +64,14 @@ export const enum SymbolFlags {
     // is modeled as an instance member but in some respects acts as a
     // class member.
     NamedTupleMember = 1 << 11,
+
+    // Indicates that the symbol should be exempt from override type checks.
+    IgnoredForOverrideChecks = 1 << 12,
+
+    // Indicates that the symbol is marked Final and is assigned a value
+    // in the class body. The typing spec indicates that these should be
+    // considered ClassVars unless they are found in a dataclass.
+    FinalVarInClassBody = 1 << 13,
 }
 
 let nextSymbolId = 1;
@@ -66,6 +81,15 @@ function getUniqueSymbolId() {
 
 // Symbol ID that indicates that there is no specific symbol.
 export const indeterminateSymbolId = 0;
+
+export interface SynthesizedTypeInfo {
+    type: Type;
+
+    // An optional node that is not used by the type evaluator
+    // but can be used by language services to provide additional
+    // functionality (such as go-to-definition).
+    node?: NameNode;
+}
 
 export class Symbol {
     // Information about the node that declared the value -
@@ -83,16 +107,20 @@ export class Symbol {
     // Symbols that are completely synthesized (i.e. have no
     // corresponding declarations in the program) can have
     // a specified type.
-    private _synthesizedType?: Type;
+    private _synthesizedTypeInfo?: SynthesizedTypeInfo;
+
+    // Is this symbol an alias for a symbol originally imported from
+    // the typing or typing_extensions module (e.g. "Final")?
+    private _typingSymbolAlias?: string;
 
     constructor(flags: SymbolFlags) {
         this.id = getUniqueSymbolId();
         this._flags = flags;
     }
 
-    static createWithType(flags: SymbolFlags, type: Type) {
+    static createWithType(flags: SymbolFlags, type: Type, node?: NameNode): Symbol {
         const newSymbol = new Symbol(flags);
-        newSymbol._synthesizedType = type;
+        newSymbol._synthesizedTypeInfo = { type, node };
         return newSymbol;
     }
 
@@ -132,12 +160,28 @@ export class Symbol {
         return !!(this._flags & SymbolFlags.InstanceMember);
     }
 
+    setIsSlotsMember() {
+        this._flags |= SymbolFlags.ClassMember | SymbolFlags.InstanceMember | SymbolFlags.SlotsMember;
+    }
+
+    isSlotsMember() {
+        return !!(this._flags & SymbolFlags.SlotsMember);
+    }
+
     setIsClassVar() {
         this._flags |= SymbolFlags.ClassVar;
     }
 
     isClassVar() {
         return !!(this._flags & SymbolFlags.ClassVar);
+    }
+
+    setIsFinalVarInClassBody() {
+        this._flags |= SymbolFlags.FinalVarInClassBody;
+    }
+
+    isFinalVarInClassBody() {
+        return !!(this._flags & SymbolFlags.FinalVarInClassBody);
     }
 
     setIsInitVar() {
@@ -174,6 +218,18 @@ export class Symbol {
 
     isNamedTupleMemberMember() {
         return !!(this._flags & SymbolFlags.NamedTupleMember);
+    }
+
+    isIgnoredForOverrideChecks() {
+        return !!(this._flags & SymbolFlags.IgnoredForOverrideChecks);
+    }
+
+    setTypingSymbolAlias(aliasedName: string) {
+        this._typingSymbolAlias = aliasedName;
+    }
+
+    getTypingSymbolAlias(): string | undefined {
+        return this._typingSymbolAlias;
     }
 
     addDeclaration(declaration: Declaration) {
@@ -235,7 +291,7 @@ export class Symbol {
 
     hasTypedDeclarations() {
         // We'll treat an synthesized type as an implicit declaration.
-        if (this._synthesizedType) {
+        if (this._synthesizedTypeInfo) {
             return true;
         }
 
@@ -247,7 +303,7 @@ export class Symbol {
     }
 
     getSynthesizedType() {
-        return this._synthesizedType;
+        return this._synthesizedTypeInfo;
     }
 }
 

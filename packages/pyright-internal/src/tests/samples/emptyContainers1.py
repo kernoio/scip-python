@@ -2,8 +2,6 @@
 
 # pyright: reportUnknownVariableType=true, reportUnknownArgumentType=true
 
-from typing import List
-
 
 def func1(a: bool):
     val1 = []
@@ -25,8 +23,7 @@ def func1(a: bool):
 
     val3 = val2
 
-    # This would normally generate an error, but because it comes from
-    # a [] expression, it's allowed.
+    # This should generate an error because val3 is partially unknown.
     print(val3)
     reveal_type(val3, expected_text="list[Unknown]")
 
@@ -57,8 +54,7 @@ def func2(a: bool):
 
     val3 = val2
 
-    # This would normally generate an error, but because it comes from
-    # a {} expression, it's allowed.
+    # This should generate an error because val3 is partially unknown.
     print(val3)
     reveal_type(val3, expected_text="dict[Unknown, Unknown]")
 
@@ -84,6 +80,6 @@ class A:
         reveal_type(self.val2, expected_text="dict[str, int]")
         reveal_type(self.val3, expected_text="list[Unknown]")
 
-    def method4(self) -> List[int]:
+    def method4(self) -> list[int]:
         # This should generate an error because of a type mismatch.
         return self.val1

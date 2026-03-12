@@ -1,4 +1,9 @@
-/// <reference path="fourslash.ts" />
+/// <reference path="typings/fourslash.d.ts" />
+
+// @filename: pyrightconfig.json
+//// {
+////   "useLibraryCodeForTypes": true
+//// }
 
 // @filename: lib1/definition.py
 // @library: true
@@ -7,7 +12,7 @@
 ////     pass
 ////
 //// class MyType:
-////     def func2():
+////     def func2(self):
 ////         '''func2 docs'''
 ////         pass
 
@@ -53,7 +58,7 @@
 ////
 //// func: ufunc
 //// class MyType:
-////     def func2() -> None : ...
+////     def func2(self) -> None : ...
 //// func3: ufunc
 //// func4: ufunc
 //// func5: ufunc

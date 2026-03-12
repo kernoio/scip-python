@@ -1,7 +1,7 @@
 # This sample tests type narrowing based on member accesses
 # to members that have literal types.
 
-from typing import ClassVar, Literal, Type, Union
+from typing import ClassVar, Literal, Union
 
 
 class A:
@@ -106,18 +106,18 @@ def is_obj5(d: D):
         reveal_type(d, expected_text="D")
 
 
-def eq_class2(c: Union[Type[A], Type[B]]):
+def eq_class2(c: Union[type[A], type[B]]):
     if c.kind_class == "A":
-        reveal_type(c, expected_text="Type[A]")
+        reveal_type(c, expected_text="type[A]")
     else:
-        reveal_type(c, expected_text="Type[B]")
+        reveal_type(c, expected_text="type[B]")
 
 
-def is_class2(c: Union[Type[A], Type[B]]):
+def is_class2(c: Union[type[A], type[B]]):
     if c.kind_class is "A":
-        reveal_type(c, expected_text="Type[A] | Type[B]")
+        reveal_type(c, expected_text="type[A] | type[B]")
     else:
-        reveal_type(c, expected_text="Type[A] | Type[B]")
+        reveal_type(c, expected_text="type[A] | type[B]")
 
 
 class E:
@@ -138,11 +138,14 @@ def test(x: E | F) -> None:
     else:
         reveal_type(x, expected_type="E")
 
+
 class G:
     type: Literal[0]
 
+
 class H:
     type: Literal[1]
+
 
 class I:
     thing: G | H
@@ -155,3 +158,47 @@ class I:
         if local.type == 1:
             reveal_type(local, expected_text="H")
 
+
+class XA:
+    data: int
+    event: Literal["a"]
+
+
+class XB:
+    data: str
+    event: Literal["b"]
+
+
+class XC:
+    data: complex
+    event: Literal["c"]
+
+
+def func1(event: XA | XC | XB) -> None:
+    if event.event == "a":
+        reveal_type(event.data, expected_text="int")
+
+    if event.event == "b":
+        if event.data:
+            reveal_type(event.data, expected_text="str")
+    elif event.event == "c":
+        reveal_type(event.data, expected_text="complex")
+
+
+class XD:
+    event: Literal["d"]
+
+
+class XE:
+    event: None | Literal["e"]
+
+
+def func2(e: XD | XE) -> None:
+    if e.event == None:
+        reveal_type(e, expected_text="XE")
+
+    if e.event == "e":
+        reveal_type(e, expected_text="XE")
+
+    if e.event == "d":
+        reveal_type(e, expected_text="XD")

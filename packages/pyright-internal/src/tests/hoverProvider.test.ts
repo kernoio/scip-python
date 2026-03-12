@@ -307,6 +307,7 @@ test('import symbol tooltip - useLibraryCodeForTypes false', async () => {
 
 // @filename: test.py
 //// from foo import [|/*marker1*/bar|]
+//// from bar.baz1 import [|/*marker2*/baz2|]
 
 // @filename: foo/__init__.py
 // @library: true
@@ -315,6 +316,10 @@ test('import symbol tooltip - useLibraryCodeForTypes false', async () => {
 // @filename: foo/bar.py
 // @library: true
 //// class bar: ...
+
+// @filename: bar/baz1/baz2/__init__.py
+// @library: true
+//// class baz: ...
     `;
 
     const state = parseAndGetTestState(code).state;
@@ -323,6 +328,7 @@ test('import symbol tooltip - useLibraryCodeForTypes false', async () => {
 
     state.verifyHover('markdown', {
         marker1: '```python\n(import) bar: Unknown\n```',
+        marker2: '```python\n(module) baz2\n```',
     });
 });
 
@@ -351,5 +357,84 @@ test('import symbol tooltip - useLibraryCodeForTypes true', async () => {
 
     state.verifyHover('markdown', {
         marker1: '```python\n(class) bar\n```',
+    });
+});
+
+test('TypedDict doc string', async () => {
+    const code = `
+// @filename: test.py
+//// from typing import [|/*marker*/TypedDict|]
+
+// @filename: typing.py
+// @library: true
+//// def TypedDict(typename, fields=None, /, *, total=True, **kwargs):
+////     """A simple typed namespace. At runtime it is equivalent to a plain dict."""
+    `;
+
+    const state = parseAndGetTestState(code).state;
+    const marker1 = state.getMarkerByName('marker');
+    state.openFile(marker1.fileName);
+
+    state.verifyHover('markdown', {
+        marker: '```python\n(class) TypedDict\n```\n---\nA simple typed namespace. At runtime it is equivalent to a plain dict.',
+    });
+});
+
+test('hover on class Foo and its __call__ method with overloads', async () => {
+    const code = `
+// @filename: test.py
+//// from typing import overload
+//// class Foo:
+////     def __init__(self):
+////         pass
+////
+////     @overload
+////     def __call__(self, a: int) -> int: pass
+////     @overload
+////     def __call__(self, a: str) -> str: pass
+////     def __call__(self, a: int | str) ->  int | str:
+////         return a   
+////
+//// [|/*marker1*/foo|] = Foo()
+//// [|/*marker2*/foo|](1)
+//// [|/*marker3*/foo|]("hello")
+//// [|/*marker4*/foo|]()
+    `;
+
+    const state = parseAndGetTestState(code).state;
+    const marker1 = state.getMarkerByName('marker1');
+
+    state.openFile(marker1.fileName);
+
+    state.verifyHover('markdown', {
+        marker1: '```python\n(variable) foo: Foo\n```',
+        marker2: '```python\n(variable) def foo(a: int) -> int\n```',
+        marker3: '```python\n(variable) def foo(a: str) -> str\n```',
+        marker4: '```python\n(variable)\ndef __call__(a: int) -> int: ...\ndef __call__(a: str) -> str: ...\n```',
+    });
+});
+
+test('hover on __call__ method', async () => {
+    const code = `
+// @filename: test.py
+//// class Foo:
+////     def __init__(self):
+////         pass
+////
+////     def __call__(self, a: int) -> int:
+////         return a   
+////
+//// [|/*marker1*/foo|] = Foo()
+//// [|/*marker2*/foo|](1)
+    `;
+
+    const state = parseAndGetTestState(code).state;
+    const marker1 = state.getMarkerByName('marker1');
+
+    state.openFile(marker1.fileName);
+
+    state.verifyHover('markdown', {
+        marker1: '```python\n(variable) foo: Foo\n```',
+        marker2: '```python\n(variable) def foo(a: int) -> int\n```',
     });
 });

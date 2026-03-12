@@ -1,7 +1,7 @@
 # This sample tests that the type checker is properly synthesizing
 # a constructor for a NewType.
 
-from typing import NewType, Union
+from typing import NewType
 
 
 UserId = NewType("UserId", int)
@@ -21,8 +21,7 @@ var3 = UserId("2")
 var4 = UserId(2, 3)
 
 
-def require_user_id(a: UserId):
-    ...
+def require_user_id(a: UserId): ...
 
 
 require_user_id(var2)

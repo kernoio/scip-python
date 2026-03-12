@@ -10,6 +10,7 @@
  */
 
 import { Diagnostic, DiagnosticWithinFile } from '../common/diagnostic';
+import { Uri } from '../common/uri/uri';
 import { ScopeType } from './scope';
 
 export enum SymbolCategory {
@@ -37,7 +38,7 @@ export interface SymbolInfo {
     category: SymbolCategory;
     name: string;
     fullName: string;
-    filePath: string;
+    fileUri: Uri;
     isExported: boolean;
     typeKnownStatus: TypeKnownStatus;
     referenceCount: number;
@@ -47,7 +48,7 @@ export interface SymbolInfo {
 
 export interface ModuleInfo {
     name: string;
-    path: string;
+    uri: Uri;
     isExported: boolean;
 }
 
@@ -57,9 +58,10 @@ export interface PackageTypeReport {
     packageName: string;
     moduleName: string;
     ignoreExternal: boolean;
-    packageRootDirectory: string | undefined;
-    moduleRootDirectory: string | undefined;
-    pyTypedPath: string | undefined;
+    packageRootDirectoryUri: Uri | undefined;
+    moduleRootDirectoryUri: Uri | undefined;
+    isModuleSingleFile: boolean;
+    pyTypedPathUri: Uri | undefined;
     missingFunctionDocStringCount: number;
     missingClassDocStringCount: number;
     missingDefaultParamCount: number;
@@ -84,18 +86,20 @@ export interface PackageTypeReport {
 
 export function getEmptyReport(
     packageName: string,
-    packageRootDirectory: string,
+    packageRootUri: Uri,
     moduleName: string,
-    moduleRootDirectory: string,
+    moduleRootUri: Uri,
+    isModuleSingleFile: boolean,
     ignoreExternal: boolean
 ) {
     const report: PackageTypeReport = {
         packageName,
         ignoreExternal,
-        packageRootDirectory,
+        packageRootDirectoryUri: packageRootUri,
         moduleName,
-        moduleRootDirectory,
-        pyTypedPath: undefined,
+        moduleRootDirectoryUri: moduleRootUri,
+        isModuleSingleFile,
+        pyTypedPathUri: undefined,
         missingFunctionDocStringCount: 0,
         missingClassDocStringCount: 0,
         missingDefaultParamCount: 0,

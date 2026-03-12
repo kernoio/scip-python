@@ -1,10 +1,11 @@
 import datetime
+import enum
 import sys
 from _typeshed import Unused
 from collections.abc import Iterable, Sequence
 from time import struct_time
-from typing import ClassVar
-from typing_extensions import Literal, TypeAlias
+from typing import ClassVar, Final
+from typing_extensions import TypeAlias
 
 __all__ = [
     "IllegalMonthError",
@@ -35,13 +36,32 @@ __all__ = [
 
 if sys.version_info >= (3, 10):
     __all__ += ["FRIDAY", "MONDAY", "SATURDAY", "SUNDAY", "THURSDAY", "TUESDAY", "WEDNESDAY"]
+if sys.version_info >= (3, 12):
+    __all__ += [
+        "Day",
+        "Month",
+        "JANUARY",
+        "FEBRUARY",
+        "MARCH",
+        "APRIL",
+        "MAY",
+        "JUNE",
+        "JULY",
+        "AUGUST",
+        "SEPTEMBER",
+        "OCTOBER",
+        "NOVEMBER",
+        "DECEMBER",
+    ]
 
 _LocaleType: TypeAlias = tuple[str | None, str | None]
 
-class IllegalMonthError(ValueError):
+class IllegalMonthError(ValueError, IndexError):
+    month: int
     def __init__(self, month: int) -> None: ...
 
 class IllegalWeekdayError(ValueError):
+    weekday: int
     def __init__(self, weekday: int) -> None: ...
 
 def isleap(year: int) -> bool: ...
@@ -61,9 +81,9 @@ class Calendar:
     def monthdatescalendar(self, year: int, month: int) -> list[list[datetime.date]]: ...
     def monthdays2calendar(self, year: int, month: int) -> list[list[tuple[int, int]]]: ...
     def monthdayscalendar(self, year: int, month: int) -> list[list[int]]: ...
-    def yeardatescalendar(self, year: int, width: int = 3) -> list[list[int]]: ...
-    def yeardays2calendar(self, year: int, width: int = 3) -> list[list[tuple[int, int]]]: ...
-    def yeardayscalendar(self, year: int, width: int = 3) -> list[list[int]]: ...
+    def yeardatescalendar(self, year: int, width: int = 3) -> list[list[list[list[datetime.date]]]]: ...
+    def yeardays2calendar(self, year: int, width: int = 3) -> list[list[list[list[tuple[int, int]]]]]: ...
+    def yeardayscalendar(self, year: int, width: int = 3) -> list[list[list[list[int]]]]: ...
     def itermonthdays3(self, year: int, month: int) -> Iterable[tuple[int, int, int]]: ...
     def itermonthdays4(self, year: int, month: int) -> Iterable[tuple[int, int, int, int]]: ...
 
@@ -106,7 +126,7 @@ class HTMLCalendar(Calendar):
     def formatyear(self, theyear: int, width: int = 3) -> str: ...
     def formatyearpage(
         self, theyear: int, width: int = 3, css: str | None = "calendar.css", encoding: str | None = None
-    ) -> str: ...
+    ) -> bytes: ...
 
 class different_locale:
     def __init__(self, locale: _LocaleType) -> None: ...
@@ -134,12 +154,57 @@ day_abbr: Sequence[str]
 month_name: Sequence[str]
 month_abbr: Sequence[str]
 
-MONDAY: Literal[0]
-TUESDAY: Literal[1]
-WEDNESDAY: Literal[2]
-THURSDAY: Literal[3]
-FRIDAY: Literal[4]
-SATURDAY: Literal[5]
-SUNDAY: Literal[6]
+if sys.version_info >= (3, 12):
+    class Month(enum.IntEnum):
+        JANUARY = 1
+        FEBRUARY = 2
+        MARCH = 3
+        APRIL = 4
+        MAY = 5
+        JUNE = 6
+        JULY = 7
+        AUGUST = 8
+        SEPTEMBER = 9
+        OCTOBER = 10
+        NOVEMBER = 11
+        DECEMBER = 12
 
-EPOCH: Literal[1970]
+    JANUARY: Final = Month.JANUARY
+    FEBRUARY: Final = Month.FEBRUARY
+    MARCH: Final = Month.MARCH
+    APRIL: Final = Month.APRIL
+    MAY: Final = Month.MAY
+    JUNE: Final = Month.JUNE
+    JULY: Final = Month.JULY
+    AUGUST: Final = Month.AUGUST
+    SEPTEMBER: Final = Month.SEPTEMBER
+    OCTOBER: Final = Month.OCTOBER
+    NOVEMBER: Final = Month.NOVEMBER
+    DECEMBER: Final = Month.DECEMBER
+
+    class Day(enum.IntEnum):
+        MONDAY = 0
+        TUESDAY = 1
+        WEDNESDAY = 2
+        THURSDAY = 3
+        FRIDAY = 4
+        SATURDAY = 5
+        SUNDAY = 6
+
+    MONDAY: Final = Day.MONDAY
+    TUESDAY: Final = Day.TUESDAY
+    WEDNESDAY: Final = Day.WEDNESDAY
+    THURSDAY: Final = Day.THURSDAY
+    FRIDAY: Final = Day.FRIDAY
+    SATURDAY: Final = Day.SATURDAY
+    SUNDAY: Final = Day.SUNDAY
+else:
+    MONDAY: Final = 0
+    TUESDAY: Final = 1
+    WEDNESDAY: Final = 2
+    THURSDAY: Final = 3
+    FRIDAY: Final = 4
+    SATURDAY: Final = 5
+    SUNDAY: Final = 6
+
+EPOCH: Final = 1970

@@ -29,8 +29,6 @@ def func4(x: bool) -> str:
         func3()
 
 
-# This should generate an error because a generator
-# function must return an iterable type.
 def func5(x: bool) -> NoReturn:
     if x:
         # This should generate an error because the function
@@ -43,8 +41,7 @@ def func5(x: bool) -> NoReturn:
 x1: Callable[[bool], bool] = func2
 
 
-async def func6() -> NoReturn:
-    ...
+async def func6() -> NoReturn: ...
 
 
 async def func7() -> NoReturn:
@@ -52,26 +49,15 @@ async def func7() -> NoReturn:
 
 
 class A:
-    def __init__(self) -> NoReturn:
-        ...
+    def __new__(cls) -> NoReturn: ...
 
 
 def func8() -> NoReturn:
     A()
 
 
-class B:
-    def __new__(cls) -> NoReturn:
-        ...
-
-
-def func9() -> NoReturn:
-    B()
-
-
 class C:
-    def __call__(self) -> NoReturn:
-        ...
+    def __call__(self) -> NoReturn: ...
 
 
 def func10() -> NoReturn:
@@ -79,17 +65,14 @@ def func10() -> NoReturn:
 
 
 @overload
-def func11() -> NoReturn:
-    ...
+def func11() -> NoReturn: ...
 
 
 @overload
-def func11(x: int) -> None:
-    ...
+def func11(x: int) -> None: ...
 
 
-def func11(x: int = 0) -> NoReturn | None:
-    ...
+def func11(x: int = 0) -> NoReturn | None: ...
 
 
 def func12() -> NoReturn:
@@ -99,3 +82,11 @@ def func12() -> NoReturn:
 def func13() -> NoReturn:
     # This should generate an error.
     func11(0)
+
+
+def func14(x: int) -> NoReturn: ...
+
+
+def func15():
+    # This should generate an error.
+    return func14()

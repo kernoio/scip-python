@@ -2,7 +2,7 @@ import {
     AnyType,
     ClassType,
     FunctionType,
-    OverloadedFunctionType,
+    OverloadedType,
     Type,
     TypeCategory,
     TypeCondition,
@@ -10,14 +10,13 @@ import {
     findSubtype,
     TypeVarType,
     ModuleType,
+    isParamSpec,
+    isTypeVarTuple,
 } from 'pyright-internal/analyzer/types';
-import { ParameterCategory } from 'pyright-internal/parser/parseNodes';
+import { ParamCategory } from 'pyright-internal/parser/parseNodes';
 
 const maxTypeRecursionCount = 30;
 
-/// isTypeImplementable is based on pyright-internal/analyzer/types:isTypeSame
-///     Should check occaisionally to make sure that we have this up-to-date,
-///     but it seems unlikely to change often
 export function isTypeImplementable(
     type1: Type,
     type2: Type,
@@ -47,20 +46,18 @@ export function isTypeImplementable(
         case TypeCategory.Class: {
             const classType2 = type2 as ClassType;
 
-            // If the details are not the same it's not the same class.
             if (!ClassType.isSameGenericClass(type1, classType2, recursionCount)) {
                 return false;
             }
 
-            if (!TypeCondition.isSame(type1.condition, type2.condition)) {
+            if (!TypeCondition.isSame(type1.props?.condition, type2.props?.condition)) {
                 return false;
             }
 
             if (!ignorePseudoGeneric || !ClassType.isPseudoGenericClass(type1)) {
-                // Make sure the type args match.
-                if (type1.tupleTypeArguments && classType2.tupleTypeArguments) {
-                    const type1TupleTypeArgs = type1.tupleTypeArguments || [];
-                    const type2TupleTypeArgs = classType2.tupleTypeArguments || [];
+                if (type1.priv.tupleTypeArgs && classType2.priv.tupleTypeArgs) {
+                    const type1TupleTypeArgs = type1.priv.tupleTypeArgs || [];
+                    const type2TupleTypeArgs = classType2.priv.tupleTypeArgs || [];
                     if (type1TupleTypeArgs.length !== type2TupleTypeArgs.length) {
                         return false;
                     }
@@ -71,7 +68,7 @@ export function isTypeImplementable(
                                 type1TupleTypeArgs[i].type,
                                 type2TupleTypeArgs[i].type,
                                 ignorePseudoGeneric,
-                                /* ignoreTypeFlags */ false,
+                                false,
                                 recursionCount,
                                 isSelfSame
                             )
@@ -84,12 +81,11 @@ export function isTypeImplementable(
                         }
                     }
                 } else {
-                    const type1TypeArgs = type1.typeArguments || [];
-                    const type2TypeArgs = classType2.typeArguments || [];
+                    const type1TypeArgs = type1.priv.typeArgs || [];
+                    const type2TypeArgs = classType2.priv.typeArgs || [];
                     const typeArgCount = Math.max(type1TypeArgs.length, type2TypeArgs.length);
 
                     for (let i = 0; i < typeArgCount; i++) {
-                        // Assume that missing type args are "Any".
                         const typeArg1 = i < type1TypeArgs.length ? type1TypeArgs[i] : AnyType.create();
                         const typeArg2 = i < type2TypeArgs.length ? type2TypeArgs[i] : AnyType.create();
 
@@ -98,7 +94,7 @@ export function isTypeImplementable(
                                 typeArg1,
                                 typeArg2,
                                 ignorePseudoGeneric,
-                                /* ignoreTypeFlags */ false,
+                                false,
                                 recursionCount,
                                 isSelfSame
                             )
@@ -117,33 +113,24 @@ export function isTypeImplementable(
         }
 
         case TypeCategory.Function: {
-            // Make sure the parameter counts match.
             const functionType2 = type2 as FunctionType;
-            const params1 = type1.details.parameters;
-            const params2 = functionType2.details.parameters;
+            const params1 = type1.shared.parameters;
+            const params2 = functionType2.shared.parameters;
 
             if (params1.length !== params2.length) {
                 return false;
             }
 
             const positionalOnlyIndex1 = params1.findIndex(
-                (param) => param.category === ParameterCategory.Simple && !param.name
+                (param) => param.category === ParamCategory.Simple && !param.name
             );
             const positionalOnlyIndex2 = params2.findIndex(
-                (param) => param.category === ParameterCategory.Simple && !param.name
+                (param) => param.category === ParamCategory.Simple && !param.name
             );
 
-            // Make sure the parameter details match.
             for (let i = 0; i < params1.length; i++) {
                 const param1 = params1[i];
                 const param2 = params2[i];
-
-                // // Skip comparing self param, TODO: Add a flag for this
-                // if (i === 0) {
-                //     if (param1.name && param1.name === 'self' && param2.name && param2.name === 'self') {
-                //         continue;
-                //     }
-                // }
 
                 if (param1.category !== param2.category) {
                     return false;
@@ -162,14 +149,14 @@ export function isTypeImplementable(
                     }
                 }
 
-                const param1Type = FunctionType.getEffectiveParameterType(type1, i);
-                const param2Type = FunctionType.getEffectiveParameterType(functionType2, i);
+                const param1Type = FunctionType.getParamType(type1, i);
+                const param2Type = FunctionType.getParamType(functionType2, i);
                 if (
                     !isTypeImplementable(
                         param1Type,
                         param2Type,
                         ignorePseudoGeneric,
-                        /* ignoreTypeFlags */ false,
+                        false,
                         recursionCount,
                         isSelfSame
                     )
@@ -178,21 +165,20 @@ export function isTypeImplementable(
                 }
             }
 
-            // Make sure the return types match.
-            let return1Type = type1.details.declaredReturnType;
-            if (type1.specializedTypes && type1.specializedTypes.returnType) {
-                return1Type = type1.specializedTypes.returnType;
+            let return1Type = type1.shared.declaredReturnType;
+            if (type1.priv.specializedTypes && type1.priv.specializedTypes.returnType) {
+                return1Type = type1.priv.specializedTypes.returnType;
             }
-            if (!return1Type && type1.inferredReturnType) {
-                return1Type = type1.inferredReturnType;
+            if (!return1Type && type1.shared.inferredReturnType) {
+                return1Type = type1.shared.inferredReturnType.type;
             }
 
-            let return2Type = functionType2.details.declaredReturnType;
-            if (functionType2.specializedTypes && functionType2.specializedTypes.returnType) {
-                return2Type = functionType2.specializedTypes.returnType;
+            let return2Type = functionType2.shared.declaredReturnType;
+            if (functionType2.priv.specializedTypes && functionType2.priv.specializedTypes.returnType) {
+                return2Type = functionType2.priv.specializedTypes.returnType;
             }
-            if (!return2Type && functionType2.inferredReturnType) {
-                return2Type = functionType2.inferredReturnType;
+            if (!return2Type && functionType2.shared.inferredReturnType) {
+                return2Type = functionType2.shared.inferredReturnType.type;
             }
 
             if (return1Type || return2Type) {
@@ -203,7 +189,7 @@ export function isTypeImplementable(
                         return1Type,
                         return2Type,
                         ignorePseudoGeneric,
-                        /* ignoreTypeFlags */ false,
+                        false,
                         recursionCount
                     )
                 ) {
@@ -214,20 +200,20 @@ export function isTypeImplementable(
             return true;
         }
 
-        case TypeCategory.OverloadedFunction: {
-            // Make sure the overload counts match.
-            const functionType2 = type2 as OverloadedFunctionType;
-            if (type1.overloads.length !== functionType2.overloads.length) {
+        case TypeCategory.Overloaded: {
+            const functionType2 = type2 as OverloadedType;
+            if (OverloadedType.getOverloads(type1).length !== OverloadedType.getOverloads(functionType2).length) {
                 return false;
             }
 
-            // We assume here that overloaded functions always appear
-            // in the same order from one analysis pass to another.
-            for (let i = 0; i < type1.overloads.length; i++) {
+            const overloads1 = OverloadedType.getOverloads(type1);
+            const overloads2 = OverloadedType.getOverloads(functionType2);
+
+            for (let i = 0; i < overloads1.length; i++) {
                 if (
                     !isTypeImplementable(
-                        type1.overloads[i],
-                        functionType2.overloads[i],
+                        overloads1[i],
+                        overloads2[i],
                         ignorePseudoGeneric,
                         ignoreTypeFlags,
                         recursionCount
@@ -241,20 +227,19 @@ export function isTypeImplementable(
         }
 
         case TypeCategory.Union: {
+            const unionType1 = type1 as UnionType;
             const unionType2 = type2 as UnionType;
-            const subtypes1 = type1.subtypes;
-            const subtypes2 = unionType2.subtypes;
+            const subtypes1 = unionType1.priv.subtypes;
+            const subtypes2 = unionType2.priv.subtypes;
 
             if (subtypes1.length !== subtypes2.length) {
                 return false;
             }
 
-            // The types do not have a particular order, so we need to
-            // do the comparison in an order-independent manner.
             return (
                 findSubtype(
                     type1,
-                    (subtype) => !UnionType.containsType(unionType2, subtype, undefined, recursionCount)
+                    (subtype) => !UnionType.containsType(unionType2, subtype, {}, undefined, recursionCount)
                 ) === undefined
             );
         }
@@ -262,24 +247,20 @@ export function isTypeImplementable(
         case TypeCategory.TypeVar: {
             const type2TypeVar = type2 as TypeVarType;
 
-            // scip-python: Allow for comparing, ignoring particular values for self
-            if (isSelfSame && type1.details.isSynthesizedSelf && type2TypeVar.details.isSynthesizedSelf) {
+            if (isSelfSame && type1.shared.isSynthesizedSelf && type2TypeVar.shared.isSynthesizedSelf) {
                 return true;
             }
 
-            if (type1.scopeId !== type2TypeVar.scopeId) {
+            if (type1.priv.scopeId !== type2TypeVar.priv.scopeId) {
                 return false;
             }
 
-            // Handle the case where this is a generic recursive type alias. Make
-            // sure that the type argument types match.
-            if (type1.details.recursiveTypeParameters && type2TypeVar.details.recursiveTypeParameters) {
-                const type1TypeArgs = type1?.typeAliasInfo?.typeArguments || [];
-                const type2TypeArgs = type2?.typeAliasInfo?.typeArguments || [];
+            if (type1.shared.recursiveAlias && type2TypeVar.shared.recursiveAlias) {
+                const type1TypeArgs = type1?.props?.typeAliasInfo?.typeArgs || [];
+                const type2TypeArgs = type2?.props?.typeAliasInfo?.typeArgs || [];
                 const typeArgCount = Math.max(type1TypeArgs.length, type2TypeArgs.length);
 
                 for (let i = 0; i < typeArgCount; i++) {
-                    // Assume that missing type args are "Any".
                     const typeArg1 = i < type1TypeArgs.length ? type1TypeArgs[i] : AnyType.create();
                     const typeArg2 = i < type2TypeArgs.length ? type2TypeArgs[i] : AnyType.create();
 
@@ -288,7 +269,7 @@ export function isTypeImplementable(
                             typeArg1,
                             typeArg2,
                             ignorePseudoGeneric,
-                            /* ignoreTypeFlags */ false,
+                            false,
                             recursionCount
                         )
                     ) {
@@ -297,23 +278,29 @@ export function isTypeImplementable(
                 }
             }
 
-            if (type1.details === type2TypeVar.details) {
+            if (type1.shared === type2TypeVar.shared) {
                 return true;
             }
 
+            if (isParamSpec(type1) !== isParamSpec(type2TypeVar)) {
+                return false;
+            }
+
+            if (isTypeVarTuple(type1) !== isTypeVarTuple(type2TypeVar)) {
+                return false;
+            }
+
             if (
-                type1.details.name !== type2TypeVar.details.name ||
-                type1.details.isParamSpec !== type2TypeVar.details.isParamSpec ||
-                type1.details.isVariadic !== type2TypeVar.details.isVariadic ||
-                type1.details.isSynthesized !== type2TypeVar.details.isSynthesized ||
-                type1.details.declaredVariance !== type2TypeVar.details.declaredVariance ||
-                type1.scopeId !== type2TypeVar.scopeId
+                type1.shared.name !== type2TypeVar.shared.name ||
+                type1.shared.isSynthesized !== type2TypeVar.shared.isSynthesized ||
+                type1.shared.declaredVariance !== type2TypeVar.shared.declaredVariance ||
+                type1.priv.scopeId !== type2TypeVar.priv.scopeId
             ) {
                 return false;
             }
 
-            const boundType1 = type1.details.boundType;
-            const boundType2 = type2TypeVar.details.boundType;
+            const boundType1 = type1.shared.boundType;
+            const boundType2 = type2TypeVar.shared.boundType;
             if (boundType1) {
                 if (
                     !boundType2 ||
@@ -321,7 +308,7 @@ export function isTypeImplementable(
                         boundType1,
                         boundType2,
                         ignorePseudoGeneric,
-                        /* ignoreTypeFlags */ false,
+                        false,
                         recursionCount
                     )
                 ) {
@@ -333,8 +320,8 @@ export function isTypeImplementable(
                 }
             }
 
-            const constraints1 = type1.details.constraints;
-            const constraints2 = type2TypeVar.details.constraints;
+            const constraints1 = type1.shared.constraints;
+            const constraints2 = type2TypeVar.shared.constraints;
             if (constraints1.length !== constraints2.length) {
                 return false;
             }
@@ -345,7 +332,7 @@ export function isTypeImplementable(
                         constraints1[i],
                         constraints2[i],
                         ignorePseudoGeneric,
-                        /* ignoreTypeFlags */ false,
+                        false,
                         recursionCount
                     )
                 ) {
@@ -359,15 +346,11 @@ export function isTypeImplementable(
         case TypeCategory.Module: {
             const type2Module = type2 as ModuleType;
 
-            // Module types are the same if they share the same
-            // module symbol table.
-            if (type1.fields === type2Module.fields) {
+            if (type1.priv.fields === type2Module.priv.fields) {
                 return true;
             }
 
-            // If both symbol tables are empty, we can also assume
-            // they're equal.
-            if (type1.fields.size === 0 && type2Module.fields.size === 0) {
+            if (type1.priv.fields.size === 0 && type2Module.priv.fields.size === 0) {
                 return true;
             }
 

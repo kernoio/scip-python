@@ -1,4 +1,4 @@
-/// <reference path="fourslash.ts" />
+/// <reference path="typings/fourslash.d.ts" />
 
 // @filename: pyrightconfig.json
 //// {
@@ -16,7 +16,7 @@
 //// import [|/*marker*/testLi|]b
 
 // @ts-ignore
-await helper.verifyCodeActions({
+await helper.verifyCodeActions('included', {
     marker: {
         codeActions: [
             {

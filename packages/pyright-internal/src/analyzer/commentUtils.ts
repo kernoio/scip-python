@@ -15,17 +15,21 @@ import {
     getBasicDiagnosticRuleSet,
     getBooleanDiagnosticRules,
     getDiagLevelDiagnosticRules,
+    getStandardDiagnosticRuleSet,
     getStrictDiagnosticRuleSet,
     getStrictModeNotOverriddenRules,
 } from '../common/configOptions';
 import { assert } from '../common/debug';
+import { DiagnosticAddendum } from '../common/diagnostic';
 import { DiagnosticRule } from '../common/diagnosticRules';
+import { convertOffsetToPosition } from '../common/positionUtils';
 import { TextRange } from '../common/textRange';
 import { TextRangeCollection } from '../common/textRangeCollection';
-import { Localizer } from '../localization/localize';
+import { LocAddendum, LocMessage } from '../localization/localize';
 import { Token } from '../parser/tokenizerTypes';
 
 const strictSetting = 'strict';
+const standardSetting = 'standard';
 const basicSetting = 'basic';
 
 export interface CommentDiagnostic {
@@ -35,33 +39,49 @@ export interface CommentDiagnostic {
 
 export function getFileLevelDirectives(
     tokens: TextRangeCollection<Token>,
+    lines: TextRangeCollection<TextRange>,
     defaultRuleSet: DiagnosticRuleSet,
     useStrict: boolean,
     diagnostics: CommentDiagnostic[]
 ): DiagnosticRuleSet {
     let ruleSet = cloneDiagnosticRuleSet(defaultRuleSet);
+    let isModified = false;
 
     if (useStrict) {
         _applyStrictRules(ruleSet);
+        isModified = true;
     }
 
     for (let i = 0; i < tokens.count; i++) {
         const token = tokens.getItemAt(i);
         if (token.comments) {
             for (const comment of token.comments) {
-                const textRange: TextRange = { start: comment.start, length: comment.length };
-                const value = _trimTextWithRange(comment.value, textRange);
+                const [value, textRange] = _trimTextWithRange(comment.value, {
+                    start: comment.start,
+                    length: comment.length,
+                });
 
-                ruleSet = _parsePyrightComment(value, textRange, ruleSet, diagnostics);
+                const isCommentOnOwnLine = (): boolean => {
+                    const curTokenLineOffset = convertOffsetToPosition(comment.start, lines).character;
+                    return curTokenLineOffset <= 1;
+                };
+
+                ruleSet = _parsePyrightComment(value, textRange, isCommentOnOwnLine, ruleSet, diagnostics);
+                isModified = true;
             }
         }
     }
 
-    return ruleSet;
+    // If we didn't make any modifications, use the default rule set to save memory.
+    return isModified ? ruleSet : defaultRuleSet;
 }
 
 function _applyStrictRules(ruleSet: DiagnosticRuleSet) {
     _overrideRules(ruleSet, getStrictDiagnosticRuleSet(), getStrictModeNotOverriddenRules());
+}
+
+function _applyStandardRules(ruleSet: DiagnosticRuleSet) {
+    _overwriteRules(ruleSet, getStandardDiagnosticRuleSet());
 }
 
 function _applyBasicRules(ruleSet: DiagnosticRuleSet) {
@@ -122,6 +142,7 @@ function _overwriteRules(ruleSet: DiagnosticRuleSet, overrideRuleSet: Diagnostic
 function _parsePyrightComment(
     commentValue: string,
     commentRange: TextRange,
+    isCommentOnOwnLine: () => boolean,
     ruleSet: DiagnosticRuleSet,
     diagnostics: CommentDiagnostic[]
 ) {
@@ -135,23 +156,35 @@ function _parsePyrightComment(
             return ruleSet;
         }
 
+        if (!isCommentOnOwnLine()) {
+            const diagAddendum = new DiagnosticAddendum();
+            diagAddendum.addMessage(LocAddendum.pyrightCommentIgnoreTip());
+            const diag: CommentDiagnostic = {
+                message: LocMessage.pyrightCommentNotOnOwnLine() + diagAddendum.getString(),
+                range: commentRange,
+            };
+
+            diagnostics.push(diag);
+        }
+
         const operandList = operands.split(',');
 
         // If it contains a "strict" operand, replace the existing
         // diagnostic rules with their strict counterparts.
         if (operandList.some((s) => s.trim() === strictSetting)) {
             _applyStrictRules(ruleSet);
+        } else if (operandList.some((s) => s.trim() === standardSetting)) {
+            _applyStandardRules(ruleSet);
         } else if (operandList.some((s) => s.trim() === basicSetting)) {
             _applyBasicRules(ruleSet);
         }
 
         let rangeOffset = 0;
         for (const operand of operandList) {
-            const operandRange: TextRange = {
+            const [trimmedOperand, operandRange] = _trimTextWithRange(operand, {
                 start: commentRange.start + commentPrefix.length + rangeOffset,
                 length: operand.length,
-            };
-            const trimmedOperand = _trimTextWithRange(operand, operandRange);
+            });
 
             ruleSet = _parsePyrightOperand(trimmedOperand, operandRange, ruleSet, diagnostics);
             rangeOffset += operand.length + 1;
@@ -168,15 +201,14 @@ function _parsePyrightOperand(
     diagnostics: CommentDiagnostic[]
 ) {
     const operandSplit = operand.split('=');
-    const ruleRange: TextRange = {
+    const [trimmedRule, ruleRange] = _trimTextWithRange(operandSplit[0], {
         start: operandRange.start,
         length: operandSplit[0].length,
-    };
-    const trimmedRule = _trimTextWithRange(operandSplit[0], ruleRange);
+    });
 
-    // Handle basic directives "basic" and "strict".
+    // Handle basic directives "basic", "standard" and "strict".
     if (operandSplit.length === 1) {
-        if (trimmedRule && [strictSetting, basicSetting].some((setting) => trimmedRule === setting)) {
+        if (trimmedRule && [strictSetting, standardSetting, basicSetting].some((setting) => trimmedRule === setting)) {
             return ruleSet;
         }
     }
@@ -185,11 +217,10 @@ function _parsePyrightOperand(
     const boolRules = getBooleanDiagnosticRules();
 
     const ruleValue = operandSplit.length > 0 ? operandSplit.slice(1).join('=') : '';
-    const ruleValueRange: TextRange = {
+    const [trimmedRuleValue, ruleValueRange] = _trimTextWithRange(ruleValue, {
         start: operandRange.start + operandSplit[0].length + 1,
         length: ruleValue.length,
-    };
-    const trimmedRuleValue = _trimTextWithRange(ruleValue, ruleValueRange);
+    });
 
     if (diagLevelRules.find((r) => r === trimmedRule)) {
         const diagLevelValue = _parseDiagLevel(trimmedRuleValue);
@@ -197,7 +228,7 @@ function _parsePyrightOperand(
             (ruleSet as any)[trimmedRule] = diagLevelValue;
         } else {
             const diag: CommentDiagnostic = {
-                message: Localizer.Diagnostic.pyrightCommentInvalidDiagnosticSeverityValue(),
+                message: LocMessage.pyrightCommentInvalidDiagnosticSeverityValue(),
                 range: trimmedRuleValue ? ruleValueRange : ruleRange,
             };
             diagnostics.push(diag);
@@ -208,7 +239,7 @@ function _parsePyrightOperand(
             (ruleSet as any)[trimmedRule] = boolValue;
         } else {
             const diag: CommentDiagnostic = {
-                message: Localizer.Diagnostic.pyrightCommentInvalidDiagnosticBoolValue(),
+                message: LocMessage.pyrightCommentInvalidDiagnosticBoolValue(),
                 range: trimmedRuleValue ? ruleValueRange : ruleRange,
             };
             diagnostics.push(diag);
@@ -216,14 +247,14 @@ function _parsePyrightOperand(
     } else if (trimmedRule) {
         const diag: CommentDiagnostic = {
             message: trimmedRuleValue
-                ? Localizer.Diagnostic.pyrightCommentUnknownDiagnosticRule().format({ rule: trimmedRule })
-                : Localizer.Diagnostic.pyrightCommentUnknownDirective().format({ directive: trimmedRule }),
+                ? LocMessage.pyrightCommentUnknownDiagnosticRule().format({ rule: trimmedRule })
+                : LocMessage.pyrightCommentUnknownDirective().format({ directive: trimmedRule }),
             range: ruleRange,
         };
         diagnostics.push(diag);
     } else {
         const diag: CommentDiagnostic = {
-            message: Localizer.Diagnostic.pyrightCommentMissingDirective(),
+            message: LocMessage.pyrightCommentMissingDirective(),
             range: ruleRange,
         };
         diagnostics.push(diag);
@@ -265,21 +296,22 @@ function _parseBoolSetting(value: string): boolean | undefined {
 
 // Calls "trim" on the text and adjusts the corresponding range
 // if characters are trimmed from the beginning or end.
-function _trimTextWithRange(text: string, range: TextRange): string {
+function _trimTextWithRange(text: string, range: TextRange): [string, TextRange] {
     assert(text.length === range.length);
     const value1 = text.trimStart();
 
+    let updatedRange = range;
+
     if (value1 !== text) {
         const delta = text.length - value1.length;
-        range.start += delta;
-        range.length -= delta;
+        updatedRange = { start: updatedRange.start + delta, length: updatedRange.length - delta };
     }
 
     const value2 = value1.trimEnd();
     if (value2 !== value1) {
-        range.length -= value1.length - value2.length;
+        updatedRange = { start: updatedRange.start, length: updatedRange.length - value1.length + value2.length };
     }
 
-    assert(value2.length === range.length);
-    return value2;
+    assert(value2.length === updatedRange.length);
+    return [value2, updatedRange];
 }

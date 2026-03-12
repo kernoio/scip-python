@@ -1,69 +1,41 @@
-# This sample tests the "slots" parameter for dataclasses introduced
-# in Python 3.10.
+# This sample tests the case where a dataclass uses a ClassVar that
+# is also Final.
 
 from dataclasses import dataclass
+from typing import ClassVar, Final
 
 
-# This should generate an error because __slots__ is already defined.
-@dataclass(slots=True)
+@dataclass
 class A:
-    x: int
+    a: Final[int]
+    b: Final[str] = ""
+    c: ClassVar[Final[int]] = 0
+    d: ClassVar[Final] = 0
+    e: Final[ClassVar[int]] = 0
 
-    __slots__ = ()
+
+a = A(1)
+
+# This should generate an error.
+a.a = 0
+
+# This should generate an error.
+a.b = ""
+
+# This should generate an error.
+a.c = 0
+
+# This should generate an error.
+A.c = 0
+
+# This should generate an error.
+A.d = 0
+
+# This should generate an error.
+A.e = 0
 
 
-@dataclass(slots=True)
+@dataclass
 class B:
-    x: int
-
-    def __init__(self):
-        self.x = 3
-
-        # This should generate an error because "y" is not in slots.
-        self.y = 3
-
-
-@dataclass(slots=False)
-class C:
-    x: int
-
-    __slots__ = ("x",)
-
-    def __init__(self):
-        self.x = 3
-
-        # This should generate an error because "y" is not in slots.
-        self.y = 3
-
-
-@dataclass
-class D:
-    __slots__ = ("y", "x")
-    x: int
-    y: str
-
-
-D(1, "bar")
-
-
-@dataclass(slots=True)
-class E:
-    a: int
-
-
-E.__slots__
-E(1).__slots__
-
-reveal_type(E.__slots__, expected_text="Iterable[str]")
-
-
-@dataclass
-class F:
-    a: int
-
-
-# This should generate an error.
-F.__slots__
-
-# This should generate an error.
-F(1).__slots__
+    a: ClassVar[Final[int]] = 0
+    b: int = 1

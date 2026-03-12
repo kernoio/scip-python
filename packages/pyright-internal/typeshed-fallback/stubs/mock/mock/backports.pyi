@@ -1,11 +1,7 @@
 import sys
+from unittest import IsolatedAsyncioTestCase as IsolatedAsyncioTestCase
 
-if sys.version_info >= (3, 8):
-    from asyncio import iscoroutinefunction as iscoroutinefunction
-    from unittest import IsolatedAsyncioTestCase as IsolatedAsyncioTestCase
+if sys.version_info >= (3, 10):
+    from inspect import iscoroutinefunction as iscoroutinefunction
 else:
-    import unittest
-
-    class IsolatedAsyncioTestCase(unittest.TestCase): ...
-    # It is a typeguard, but its signature is to complex to duplicate.
-    def iscoroutinefunction(obj: object) -> bool: ...
+    from asyncio import iscoroutinefunction as iscoroutinefunction

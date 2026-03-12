@@ -14,12 +14,31 @@ import { convertOffsetsToRange } from './positionUtils';
 import { hashString } from './stringUtils';
 import { Range, TextRange } from './textRange';
 import { TextRangeCollection } from './textRangeCollection';
+import { Uri } from './uri/uri';
 
 // Represents a collection of diagnostics within a file.
 export interface FileDiagnostics {
-    filePath: string;
+    fileUri: Uri;
     version: number | undefined;
     diagnostics: Diagnostic[];
+}
+
+export namespace FileDiagnostics {
+    export function toJsonObj(fileDiag: FileDiagnostics): any {
+        return {
+            fileUri: fileDiag.fileUri.toJsonObj(),
+            version: fileDiag.version,
+            diagnostics: fileDiag.diagnostics.map((d) => d.toJsonObj()),
+        };
+    }
+
+    export function fromJsonObj(fileDiagObj: any): FileDiagnostics {
+        return {
+            fileUri: Uri.fromJsonObj(fileDiagObj.fileUri),
+            version: fileDiagObj.version,
+            diagnostics: fileDiagObj.diagnostics.map((d: any) => Diagnostic.fromJsonObj(d)),
+        };
+    }
 }
 
 // Creates and tracks a list of diagnostics.

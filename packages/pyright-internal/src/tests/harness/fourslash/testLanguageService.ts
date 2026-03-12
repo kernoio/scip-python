@@ -6,33 +6,32 @@
  * Test mock that implements LanguageServiceInterface
  */
 
-import * as path from 'path';
 import { CancellationToken, CodeAction, ExecuteCommandParams } from 'vscode-languageserver';
 
 import {
     BackgroundAnalysisProgram,
     BackgroundAnalysisProgramFactory,
 } from '../../../analyzer/backgroundAnalysisProgram';
-import { CacheManager } from '../../../analyzer/cacheManager';
 import { ImportResolver, ImportResolverFactory } from '../../../analyzer/importResolver';
 import { MaxAnalysisTime } from '../../../analyzer/program';
-import { AnalyzerService } from '../../../analyzer/service';
-import { BackgroundAnalysisBase } from '../../../backgroundAnalysisBase';
+import { AnalyzerService, AnalyzerServiceOptions } from '../../../analyzer/service';
+import { IBackgroundAnalysis } from '../../../backgroundAnalysisBase';
 import { CommandController } from '../../../commands/commandController';
 import { ConfigOptions } from '../../../common/configOptions';
 import { ConsoleInterface } from '../../../common/console';
 import * as debug from '../../../common/debug';
 import { FileSystem } from '../../../common/fileSystem';
-import { Range } from '../../../common/textRange';
-import { UriParser } from '../../../common/uriParser';
-import { LanguageServerInterface, MessageAction, ServerSettings, WindowInterface } from '../../../languageServerBase';
-import { CodeActionProvider } from '../../../languageService/codeActionProvider';
 import {
-    createInitStatus,
-    WellKnownWorkspaceKinds,
-    Workspace,
-    WorkspacePythonPathKind,
-} from '../../../workspaceFactory';
+    LanguageServerInterface,
+    MessageAction,
+    ServerSettings,
+    WindowInterface,
+} from '../../../common/languageServerInterface';
+import { ServiceProvider } from '../../../common/serviceProvider';
+import { Range } from '../../../common/textRange';
+import { Uri } from '../../../common/uri/uri';
+import { CodeActionProvider } from '../../../languageService/codeActionProvider';
+import { WellKnownWorkspaceKinds, Workspace, createInitStatus } from '../../../workspaceFactory';
 import { TestAccessHost } from '../testAccessHost';
 import { HostSpecificFeatures } from './testState';
 
@@ -40,34 +39,29 @@ export class TestFeatures implements HostSpecificFeatures {
     importResolverFactory: ImportResolverFactory = AnalyzerService.createImportResolver;
     backgroundAnalysisProgramFactory: BackgroundAnalysisProgramFactory = (
         serviceId: string,
-        console: ConsoleInterface,
+        serviceProvider: ServiceProvider,
         configOptions: ConfigOptions,
         importResolver: ImportResolver,
-        backgroundAnalysis?: BackgroundAnalysisBase,
-        maxAnalysisTime?: MaxAnalysisTime,
-        cacheManager?: CacheManager
+        backgroundAnalysis?: IBackgroundAnalysis,
+        maxAnalysisTime?: MaxAnalysisTime
     ) =>
         new BackgroundAnalysisProgram(
-            console,
+            serviceId,
+            serviceProvider,
             configOptions,
             importResolver,
             backgroundAnalysis,
             maxAnalysisTime,
-            /* disableChecker */ undefined,
-            cacheManager
+            /* disableChecker */ undefined
         );
-
-    runIndexer(workspace: Workspace, noStdLib: boolean, options?: string): void {
-        /* empty */
-    }
 
     getCodeActionsForPosition(
         workspace: Workspace,
-        filePath: string,
+        fileUri: Uri,
         range: Range,
         token: CancellationToken
     ): Promise<CodeAction[]> {
-        return CodeActionProvider.getCodeActionsForPosition(workspace, filePath, range, undefined, token);
+        return CodeActionProvider.getCodeActionsForPosition(workspace, fileUri, range, undefined, token);
     }
     execute(ls: LanguageServerInterface, params: ExecuteCommandParams, token: CancellationToken): Promise<any> {
         const controller = new CommandController(ls);
@@ -76,39 +70,53 @@ export class TestFeatures implements HostSpecificFeatures {
 }
 
 export class TestLanguageService implements LanguageServerInterface {
+    readonly window = new TestWindow();
+    readonly supportAdvancedEdits = true;
+    readonly serviceProvider: ServiceProvider;
+
     private readonly _workspace: Workspace;
     private readonly _defaultWorkspace: Workspace;
-    private readonly _uriParser: UriParser;
 
-    constructor(workspace: Workspace, readonly console: ConsoleInterface, readonly fs: FileSystem) {
+    constructor(
+        workspace: Workspace,
+        readonly console: ConsoleInterface,
+        readonly fs: FileSystem,
+        options?: AnalyzerServiceOptions
+    ) {
         this._workspace = workspace;
-        this._uriParser = new UriParser(this.fs);
+        this.serviceProvider = this._workspace.service.serviceProvider;
+
         this._defaultWorkspace = {
             workspaceName: '',
-            rootPath: '',
-            uri: '',
-            pythonPath: undefined,
-            pythonPathKind: WorkspacePythonPathKind.Mutable,
+            rootUri: undefined,
             kinds: [WellKnownWorkspaceKinds.Test],
-            service: new AnalyzerService('test service', this.fs, {
-                console: this.console,
-                hostFactory: () => new TestAccessHost(),
-                importResolverFactory: AnalyzerService.createImportResolver,
-                configOptions: new ConfigOptions('.'),
-            }),
+            service: new AnalyzerService(
+                'test service',
+                new ServiceProvider(),
+                options ?? {
+                    console: this.console,
+                    hostFactory: () => new TestAccessHost(),
+                    importResolverFactory: AnalyzerService.createImportResolver,
+                    configOptions: new ConfigOptions(Uri.empty()),
+                    fileSystem: this.fs,
+                    shouldRunAnalysis: () => true,
+                }
+            ),
             disableLanguageServices: false,
+            disableTaggedHints: false,
             disableOrganizeImports: false,
             disableWorkspaceSymbol: false,
             isInitialized: createInitStatus(),
             searchPathsToWatch: [],
         };
     }
-    decodeTextDocumentUri(uriString: string): string {
-        return this._uriParser.decodeTextDocumentUri(uriString);
+
+    getWorkspaces(): Promise<Workspace[]> {
+        return Promise.resolve([this._workspace, this._defaultWorkspace]);
     }
 
-    getWorkspaceForFile(filePath: string): Promise<Workspace> {
-        if (filePath.startsWith(this._workspace.rootPath)) {
+    getWorkspaceForFile(uri: Uri): Promise<Workspace> {
+        if (uri.startsWith(this._workspace.rootUri)) {
             return Promise.resolve(this._workspace);
         }
 
@@ -123,6 +131,7 @@ export class TestLanguageService implements LanguageServerInterface {
             openFilesOnly: this._workspace.service.getConfigOptions().checkOnlyOpenFiles,
             useLibraryCodeForTypes: this._workspace.service.getConfigOptions().useLibraryCodeForTypes,
             disableLanguageServices: this._workspace.disableLanguageServices,
+            disableTaggedHints: this._workspace.disableTaggedHints,
             autoImportCompletions: this._workspace.service.getConfigOptions().autoImportCompletions,
             functionSignatureDisplay: this._workspace.service.getConfigOptions().functionSignatureDisplay,
         };
@@ -130,7 +139,7 @@ export class TestLanguageService implements LanguageServerInterface {
         return Promise.resolve(settings);
     }
 
-    createBackgroundAnalysis(serviceId: string): BackgroundAnalysisBase | undefined {
+    createBackgroundAnalysis(serviceId: string): IBackgroundAnalysis | undefined {
         // worker thread doesn't work in Jest
         // by returning undefined, analysis will run inline
         return undefined;
@@ -143,10 +152,6 @@ export class TestLanguageService implements LanguageServerInterface {
     restart(): void {
         // Don't do anything
     }
-
-    readonly rootPath = path.sep;
-    readonly window = new TestWindow();
-    readonly supportAdvancedEdits = true;
 }
 
 class TestWindow implements WindowInterface {

@@ -7,7 +7,7 @@ import { convertOffsetToPosition } from 'pyright-internal/common/positionUtils';
 import { TextRange } from 'pyright-internal/common/textRange';
 import { TextRangeCollection } from 'pyright-internal/common/textRangeCollection';
 import { printParseNodeType } from 'pyright-internal/analyzer/parseTreeUtils';
-import { TreeDumper } from 'pyright-internal/commands/dumpFileDebugInfoCommand';
+import { TreeDumper } from 'pyright-internal/common/languageInfoUtils';
 import {
     AssignmentNode,
     ClassNode,
@@ -50,14 +50,11 @@ import { Program } from 'pyright-internal/analyzer/program';
 import { Counter } from './lsif-typescript/Counter';
 import PythonPackage from './virtualenv/PythonPackage';
 import * as Hardcoded from './hardcoded';
-import { Event } from 'vscode-languageserver';
-import { HoverResults } from 'pyright-internal/languageService/hoverProvider';
+import { Event, Hover, MarkupContent } from 'vscode-languageserver';
+import { HoverProvider } from 'pyright-internal/languageService/hoverProvider';
 import { convertDocStringToMarkdown } from 'pyright-internal/analyzer/docStringConversion';
 import { assert } from 'pyright-internal/common/debug';
-import { ClassMemberLookupFlags, lookUpClassMember } from 'pyright-internal/analyzer/typeUtils';
-import { PyrightFileSystem } from 'pyright-internal/pyrightFileSystem';
-import { createFromRealFileSystem } from 'pyright-internal/common/realFileSystem';
-import { normalizePathCase } from 'pyright-internal/common/pathUtils';
+import { MemberAccessFlags, lookUpClassMember } from 'pyright-internal/analyzer/typeUtils';
 import { assertSometimesNormalized } from './assertions';
 
 //  Useful functions for later, but haven't gotten far enough yet to use them.
@@ -185,7 +182,7 @@ export class TreeVisitor extends ParseTreeWalker {
             errorLevel = 2;
         }
 
-        log.info('=> Working file:', config.sourceFile.getFilePath(), '<==');
+        log.info('=> Working file:', config.sourceFile.getUri().getFilePath(), '<==');
 
         this.evaluator = config.evaluator;
         this.program = config.program;
@@ -232,7 +229,7 @@ export class TreeVisitor extends ParseTreeWalker {
                 );
 
                 const documentation = [`(module) ${fileInfo.moduleName}`];
-                const docstring = ParseTreeUtils.getDocString(node.statements);
+                const docstring = ParseTreeUtils.getDocString(node.d.statements);
                 if (docstring) {
                     documentation.push(convertDocStringToMarkdown(docstring.trim()));
                 }
@@ -269,12 +266,13 @@ export class TreeVisitor extends ParseTreeWalker {
         // so we need to push a new symbol
         const enclosingClass = ParseTreeUtils.getEnclosingClass(node, true);
         if (enclosingClass) {
-            const hoverResult = this.program.getHoverForPosition(
-                this.fileInfo!.filePath,
+            const hoverResult = new HoverProvider(
+                this.program,
+                this.fileInfo!.fileUri,
                 convertOffsetToPosition(node.start, this.fileInfo!.lines),
                 'markdown',
                 _cancellationToken
-            );
+            ).getHover();
 
             this.document.symbols.push(
                 new scip.SymbolInformation({
@@ -291,8 +289,8 @@ export class TreeVisitor extends ParseTreeWalker {
         // Probably not performant, we should figure out if we can tell that
         // this particular spot is a definition or not, or potentially cache
         // per file or something?
-        if (node.leftExpression.nodeType == ParseNodeType.Name) {
-            const decls = this.evaluator.getDeclarationsForNameNode(node.leftExpression) || [];
+        if (node.d.leftExpr.nodeType == ParseNodeType.Name) {
+            const decls = this.evaluator.getDeclInfoForNameNode(node.d.leftExpr as NameNode)?.decls || [];
             if (decls.length > 0) {
                 let dec = decls[0];
                 if (dec.node.parent && dec.node.parent.id == node.id) {
@@ -322,7 +320,7 @@ export class TreeVisitor extends ParseTreeWalker {
     private getFunctionRelationships(node: FunctionNode): scip.Relationship[] | undefined {
         // Skip all dunder methods. They all implement stuff but it's not helpful to see
         // at this point in scip-python
-        if (node.name.value.startsWith('__')) {
+        if (node.d.name.d.value.startsWith('__')) {
             return undefined;
         }
 
@@ -332,7 +330,6 @@ export class TreeVisitor extends ParseTreeWalker {
             return undefined;
         }
 
-        // methodAlwaysRaisesNotImplemented <- this is a good one for implemtnations, but maybe we don't need that
         const enclosingClassType = this.evaluator.getTypeOfClass(enclosingClass);
         if (!enclosingClassType) {
             return undefined;
@@ -341,7 +338,7 @@ export class TreeVisitor extends ParseTreeWalker {
         let relationshipMap: Map<string, scip.Relationship> = new Map();
         let classType = enclosingClassType.classType;
 
-        let classMember = lookUpClassMember(classType, node.name.value, ClassMemberLookupFlags.SkipOriginalClass);
+        let classMember = lookUpClassMember(classType, node.d.name.d.value, MemberAccessFlags.SkipOriginalClass);
         if (!classMember) {
             return undefined;
         }
@@ -375,7 +372,7 @@ export class TreeVisitor extends ParseTreeWalker {
         let stubs = this._docstringWriter.docstrings.get(node.id)!;
         documentation.push('```python\n' + stubs.join('\n') + '\n```');
 
-        let functionDoc = ParseTreeUtils.getDocString(node.suite.statements);
+        let functionDoc = ParseTreeUtils.getDocString(node.d.suite.d.statements);
 
         if (functionDoc) {
             documentation.push(functionDoc);
@@ -395,19 +392,19 @@ export class TreeVisitor extends ParseTreeWalker {
         // - name
         // - return type
         // - parameters
-        node.decorators.forEach((decoratorNode) => this.walk(decoratorNode));
-        this.visitName(node.name);
-        if (node.returnTypeAnnotation) {
-            this.walk(node.returnTypeAnnotation);
+        node.d.decorators.forEach((decoratorNode) => this.walk(decoratorNode));
+        this.visitName(node.d.name);
+        if (node.d.returnAnnotation) {
+            this.walk(node.d.returnAnnotation);
         }
 
         // Walk the parameters individually, with additional information about the function
-        node.parameters.forEach((paramNode: ParameterNode) => {
+        node.d.params.forEach((paramNode: ParameterNode) => {
             const symbol = this.getScipSymbol(paramNode);
 
             // This pulls documentation of various styles from function docstring
-            const paramDocstring = paramNode.name
-                ? extractParameterDocumentation(functionDoc || '', paramNode.name!.value)
+            const paramDocstring = paramNode.d.name
+                ? extractParameterDocumentation(functionDoc || '', paramNode.d.name.d.value)
                 : undefined;
 
             const paramDocumentation = paramDocstring ? [paramDocstring] : undefined;
@@ -424,7 +421,7 @@ export class TreeVisitor extends ParseTreeWalker {
         });
 
         // Walk the function definition
-        this.walk(node.suite);
+        this.walk(node.d.suite);
 
         return false;
     }
@@ -433,7 +430,7 @@ export class TreeVisitor extends ParseTreeWalker {
     //         ^^^^^^^^  reference requests
     override visitImport(node: ImportNode): boolean {
         this._docstringWriter.visitImport(node);
-        node.list.forEach((child) => this.walk(child));
+        node.d.list.forEach((child) => this.walk(child));
 
         return false;
     }
@@ -452,15 +449,15 @@ export class TreeVisitor extends ParseTreeWalker {
             new scip.Occurrence({
                 symbol_roles: scip.SymbolRole.ReadAccess,
                 symbol: symbol.value,
-                range: parseNodeToRange(node.module, this.fileInfo!.lines).toLsif(),
+                range: parseNodeToRange(node.d.module, this.fileInfo!.lines).toLsif(),
             })
         );
-        const symbolPackage = this.moduleNameNodeToPythonPackage(node.module);
+        const symbolPackage = this.moduleNameNodeToPythonPackage(node.d.module);
         if (!symbolPackage) {
-            this.emitExternalSymbolInformation(node.module, symbol, []);
+            this.emitExternalSymbolInformation(node.d.module, symbol, []);
         }
 
-        node.imports.forEach((imp) => this.walk(imp));
+        node.d.imports.forEach((imp) => this.walk(imp));
         return false;
     }
 
@@ -473,35 +470,26 @@ export class TreeVisitor extends ParseTreeWalker {
     //        ^^^^^^^ node.module (create new reference)
     //                   ^ node.alias (create new local definition)
     override visitImportAs(node: ImportAsNode): boolean {
-        const moduleName = _formatModuleName(node.module);
-        const importInfo = getImportInfo(node.module);
+        const moduleName = _formatModuleName(node.d.module);
+        const importInfo = getImportInfo(node.d.module);
 
         if (
             importInfo &&
-            importInfo.resolvedPaths[0] &&
+            importInfo.resolvedUris[0] &&
             ((): boolean => {
-                // HACK(id: inconsistent-casing-of-resolved-paths):
-                // Sometimes the resolvedPath is normalized and sometimes it is not.
-                // If we remove one of the two checks below, existing tests start failing
-                // (aliased_import and nested_items tests). So do both checks.
-                const resolvedPath = path.resolve(importInfo.resolvedPaths[0]);
+                const resolvedPath = path.resolve(importInfo.resolvedUris[0].getFilePath());
                 assertSometimesNormalized(resolvedPath, 'visitImportAs.resolvedPath');
-                return (
-                    resolvedPath.startsWith(this.cwd) ||
-                    resolvedPath.startsWith(
-                        normalizePathCase(new PyrightFileSystem(createFromRealFileSystem()), this.cwd)
-                    )
-                );
+                return resolvedPath.startsWith(this.cwd);
             })()
         ) {
             const symbol = this.safeModuleInit(this.projectPackage, moduleName);
 
-            this.pushNewOccurrence(node.module, symbol);
+            this.pushNewOccurrence(node.d.module, symbol);
         } else {
-            const pythonPackage = this.moduleNameNodeToPythonPackage(node.module);
+            const pythonPackage = this.moduleNameNodeToPythonPackage(node.d.module);
             if (pythonPackage) {
                 const symbol = this.safeModuleInit(pythonPackage, moduleName);
-                this.pushNewOccurrence(node.module, symbol);
+                this.pushNewOccurrence(node.d.module, symbol);
             } else {
                 // For python packages & modules that we cannot resolve,
                 // we'll just make a local for the file and note that we could not resolve this module.
@@ -513,12 +501,12 @@ export class TreeVisitor extends ParseTreeWalker {
                 const symbol = this.getLocalForDeclaration(node, [
                     `(module): ${moduleName} [unable to resolve module]`,
                 ]);
-                this.pushNewOccurrence(node.module, symbol);
+                this.pushNewOccurrence(node.d.module, symbol);
             }
         }
 
-        if (node.alias) {
-            this.pushNewOccurrence(node.alias, this.getLocalForDeclaration(node.alias));
+        if (node.d.alias) {
+            this.pushNewOccurrence(node.d.alias, this.getLocalForDeclaration(node.d.alias));
         }
 
         return false;
@@ -585,14 +573,14 @@ export class TreeVisitor extends ParseTreeWalker {
                 // If we see that the declaration is for an alias, then we want to just use the
                 // imported alias local definition. This prevents these from leaking out (which
                 // I think is the desired behavior)
-                if (declNode.alias) {
-                    this.pushNewOccurrence(node, this.getScipSymbol(declNode.alias));
+                if (declNode.d.alias) {
+                    this.pushNewOccurrence(node, this.getScipSymbol(declNode.d.alias));
                     return true;
                 }
 
-                const moduleName = _formatModuleName(declNode.module);
+                const moduleName = _formatModuleName(declNode.d.module);
                 const symbol = this.getSymbolOnce(declNode, () => {
-                    const pythonPackage = this.moduleNameNodeToPythonPackage(declNode.module, decl);
+                    const pythonPackage = this.moduleNameNodeToPythonPackage(declNode.d.module, decl);
                     if (!pythonPackage) {
                         return this.getLocalForDeclaration(node);
                     }
@@ -606,8 +594,8 @@ export class TreeVisitor extends ParseTreeWalker {
                 // TODO: We could maybe cache this to not always be asking for these names & decls
                 let nodeForRange: ParseNode = node;
                 while (nodeForRange.parent && nodeForRange.parent.nodeType === ParseNodeType.MemberAccess) {
-                    const member = nodeForRange.parent.memberName;
-                    const memberDecl = this.evaluator.getDeclarationsForNameNode(member, false);
+                    const member = nodeForRange.parent.d.member;
+                    const memberDecl = this.evaluator.getDeclInfoForNameNode(member, false)?.decls;
 
                     // OK, so I think _only_ Modules won't have a declaration,
                     // so keep going until we find something that _has_ a declaration.
@@ -645,7 +633,7 @@ export class TreeVisitor extends ParseTreeWalker {
                 //  I don't know that it's great to loop all the way back up for this all the time
                 //  We could provide a list of items that have their own scope that would be OK to be leaked
                 //  because they aren't statements
-                if (hasAncestor(declNode, ParseNodeType.ListComprehensionFor)) {
+                if (hasAncestor(declNode, ParseNodeType.ComprehensionFor)) {
                     this.getLocalForDeclaration(declNode);
                 }
 
@@ -662,7 +650,7 @@ export class TreeVisitor extends ParseTreeWalker {
 
         const typeInfo = this.evaluator.getTypeForDeclaration(decl);
         if (isAliasDeclaration(decl)) {
-            const resolved = this.evaluator.resolveAliasDeclaration(decl, true, true);
+            const resolved = this.evaluator.resolveAliasDeclaration(decl, true, { allowExternallyHiddenAccess: true });
             const resolvedType = resolved ? this.evaluator.getTypeForDeclaration(resolved) : undefined;
 
             if (!resolved) {
@@ -677,12 +665,13 @@ export class TreeVisitor extends ParseTreeWalker {
             if (resolved && resolvedType && resolvedType.type) {
                 const isDefinition = node.id === resolved?.node.id;
                 const resolvedInfo = getFileInfo(node);
-                const hoverResult = this.program.getHoverForPosition(
-                    resolvedInfo.filePath,
+                const hoverResult = new HoverProvider(
+                    this.program,
+                    resolvedInfo.fileUri,
                     convertOffsetToPosition(node.start, resolvedInfo.lines),
                     'markdown',
                     _cancellationToken
-                );
+                ).getHover();
 
                 if (hoverResult) {
                     const symbol = this.typeToSymbol(node, declNode, resolvedType.type);
@@ -713,7 +702,7 @@ export class TreeVisitor extends ParseTreeWalker {
                         documentation.push('```python\n' + stub.join('\n') + '\n```');
                     }
 
-                    const doc = ParseTreeUtils.getDocString(decl.node.suite.statements)?.trim();
+                    const doc = ParseTreeUtils.getDocString(decl.node.d.suite.d.statements)?.trim();
                     if (doc) {
                         documentation.push(convertDocStringToMarkdown(doc));
                     }
@@ -724,18 +713,18 @@ export class TreeVisitor extends ParseTreeWalker {
                     if (type && type.category === TypeCategory.Class) {
                         // TODO: Add Protocol support with:
                         //          base.compatibleProtocols
-                        relationships = type.details.baseClasses
+                        relationships = type.shared.baseClasses
                             .filter((base) => {
                                 if (base.category !== TypeCategory.Class) {
                                     return false;
                                 }
 
                                 // Don't show implementations for `object` cause that's pretty useless
-                                if (base.details.moduleName === 'builtins' && base.details.name == 'object') {
+                                if (base.shared.moduleName === 'builtins' && base.shared.name == 'object') {
                                     return false;
                                 }
 
-                                const pythonPackage = this.guessPackage(base.details.moduleName, base.details.filePath);
+                                const pythonPackage = this.guessPackage(base.shared.moduleName, base.shared.fileUri.getFilePath());
                                 if (!pythonPackage) {
                                     return false;
                                 }
@@ -746,14 +735,14 @@ export class TreeVisitor extends ParseTreeWalker {
                                 // Filtered out in previous filter
                                 assert(base.category === TypeCategory.Class);
                                 const pythonPackage = this.guessPackage(
-                                    base.details.moduleName,
-                                    base.details.filePath
+                                    base.shared.moduleName,
+                                    base.shared.fileUri.getFilePath()
                                 )!;
 
                                 const symbol = this.safeClass(
                                     pythonPackage,
-                                    base.details.moduleName,
-                                    base.details.name
+                                    base.shared.moduleName,
+                                    base.shared.name
                                 ).value;
 
                                 return new scip.Relationship({
@@ -824,14 +813,14 @@ export class TreeVisitor extends ParseTreeWalker {
 
     override visitName(node: NameNode): boolean {
         if (!node.parent) {
-            throw `No parent for named node: ${node.token.value}`;
+            throw `No parent for named node: ${node.d.token.value}`;
         }
 
-        if (node.token.value === '_') {
+        if (node.d.token.value === '_') {
             return true;
         }
 
-        const decls = this.evaluator.getDeclarationsForNameNode(node) || [];
+        const decls = this.evaluator.getDeclInfoForNameNode(node)?.decls || [];
 
         if (decls.length === 0) {
             return this.emitNameWithoutDeclaration(node);
@@ -886,10 +875,10 @@ export class TreeVisitor extends ParseTreeWalker {
             }
 
             moduleName = nodeFileInfo.moduleName;
-            const fileIsInProject = nodeFileInfo.filePath.startsWith(this.config.scipConfig.projectRoot);
+            const fileIsInProject = nodeFileInfo.fileUri.getFilePath().startsWith(this.config.scipConfig.projectRoot);
             if (fileIsInProject) {
                 if (moduleName === 'builtins' || Hardcoded.stdlib_module_names.has(moduleName)) {
-                    const relativePath = path.relative(this.config.scipConfig.projectRoot, nodeFileInfo.filePath);
+                    const relativePath = path.relative(this.config.scipConfig.projectRoot, nodeFileInfo.fileUri.getFilePath());
                     moduleName = relativePath
                         .replace(/\/__init__\.py$/, '')
                         .replace(/\.py$/, '')
@@ -974,18 +963,18 @@ export class TreeVisitor extends ParseTreeWalker {
                 }
             }
             case ParseNodeType.ModuleName: {
-                if (node.nameParts.length === 0) {
+                if (node.d.nameParts.length === 0) {
                     return ScipSymbol.local(this.counter.next());
                 }
 
-                const namePart = node.nameParts[0];
-                if (!this.config.projectModulePrefixes.has(namePart.value)) {
+                const namePart = node.d.nameParts[0];
+                if (!this.config.projectModulePrefixes.has(namePart.d.value)) {
                     return ScipSymbol.local(this.counter.next());
                 }
 
                 return this.safeModuleInit(
                     pythonPackage,
-                    node.nameParts.map((namePart) => namePart.value).join('.')
+                    node.d.nameParts.map((namePart) => namePart.d.value).join('.')
                 );
             }
             case ParseNodeType.MemberAccess: {
@@ -993,23 +982,23 @@ export class TreeVisitor extends ParseTreeWalker {
                 return ScipSymbol.empty();
             }
             case ParseNodeType.Parameter: {
-                if (!node.name) {
+                if (!node.d.name) {
                     log.debug('Paramerter with no name', node);
                     return ScipSymbol.local(this.counter.next());
                 }
 
-                return Symbols.makeParameter(this.getScipSymbol(node.parent!), node.name.value);
+                return Symbols.makeParameter(this.getScipSymbol(node.parent!), node.d.name.d.value);
             }
             case ParseNodeType.Class: {
-                return Symbols.makeType(this.getScipSymbol(node.parent!), (node as ClassNode).name.value);
+                return Symbols.makeType(this.getScipSymbol(node.parent!), (node as ClassNode).d.name.d.value);
             }
             case ParseNodeType.Function: {
                 let cls = ParseTreeUtils.getEnclosingClass(node, false);
                 if (cls) {
-                    return Symbols.makeMethod(this.getScipSymbol(cls), (node as FunctionNode).name!.value);
+                    return Symbols.makeMethod(this.getScipSymbol(cls), (node as FunctionNode).d.name.d.value);
                 }
 
-                return Symbols.makeMethod(this.getScipSymbol(node.parent!), (node as FunctionNode).name!.value);
+                return Symbols.makeMethod(this.getScipSymbol(node.parent!), (node as FunctionNode).d.name.d.value);
             }
             case ParseNodeType.Suite: {
                 if (node.parent) {
@@ -1028,20 +1017,20 @@ export class TreeVisitor extends ParseTreeWalker {
 
                 switch (parent.nodeType) {
                     case ParseNodeType.MemberAccess: {
-                        const type = this.evaluator.getTypeOfExpression(parent.leftExpression);
+                        const type = this.evaluator.getTypeOfExpression(parent.d.leftExpr);
                         switch (type.type.category) {
                             case TypeCategory.TypeVar: {
                                 const typeVar = type.type;
-                                const bound = typeVar.details.boundType! as ClassType;
+                                const bound = typeVar.shared.boundType! as ClassType;
 
                                 return this.getSymbolOnce(node, () => {
-                                    const pythonPackage = this.getPackageInfo(node, bound.details.moduleName)!;
+                                    const pythonPackage = this.getPackageInfo(node, bound.shared.moduleName)!;
                                     let symbol = Symbols.makeTerm(
                                         Symbols.makeType(
-                                            this.safeModule(pythonPackage, bound.details.moduleName),
-                                            bound.details.name
+                                            this.safeModule(pythonPackage, bound.shared.moduleName),
+                                            bound.shared.name
                                         ),
-                                        node.value
+                                        node.d.value
                                     );
 
                                     // TODO: We might not want to do this if it's not the definition?
@@ -1072,14 +1061,14 @@ export class TreeVisitor extends ParseTreeWalker {
                     }
                 }
 
-                return Symbols.makeTerm(this.getScipSymbol(enclosingSuite || parent), (node as NameNode).value);
+                return Symbols.makeTerm(this.getScipSymbol(enclosingSuite || parent), (node as NameNode).d.value);
             }
             case ParseNodeType.TypeAnnotation: {
-                switch (node.valueExpression.nodeType) {
+                switch (node.d.valueExpr.nodeType) {
                     case ParseNodeType.Name: {
                         return Symbols.makeTerm(
                             this.getScipSymbol(ParseTreeUtils.getEnclosingSuite(node) || node.parent!),
-                            node.valueExpression.value
+                            node.d.valueExpr.d.value
                         );
                     }
                     default: {
@@ -1121,16 +1110,16 @@ export class TreeVisitor extends ParseTreeWalker {
                 return this.safeModuleInit(pythonPackage, moduleName);
             }
             case ParseNodeType.ImportFrom: {
-                const importPackage = this.moduleNameNodeToPythonPackage(node.module);
+                const importPackage = this.moduleNameNodeToPythonPackage(node.d.module);
                 if (!importPackage) {
-                    return this.getScipSymbol(node.module);
+                    return this.getScipSymbol(node.d.module);
                 }
 
-                return this.makeScipSymbol(importPackage, _formatModuleName(node.module), node.module);
+                return this.makeScipSymbol(importPackage, _formatModuleName(node.d.module), node.d.module);
             }
             case ParseNodeType.ImportFromAs: {
                 // TODO(0.2): Resolve all these weird import things.
-                const decls = this.evaluator.getDeclarationsForNameNode(node.name);
+                const decls = this.evaluator.getDeclInfoForNameNode(node.d.name)?.decls;
                 if (decls) {
                     const decl = decls[0];
 
@@ -1145,7 +1134,7 @@ export class TreeVisitor extends ParseTreeWalker {
                     }
                 }
 
-                const type = this.getAliasedSymbolTypeForName(node, node.name.value);
+                const type = this.getAliasedSymbolTypeForName(node, node.d.name.d.value);
                 if (type) {
                     switch (type.category) {
                         case TypeCategory.Module: {
@@ -1155,11 +1144,11 @@ export class TreeVisitor extends ParseTreeWalker {
                             switch (parent.nodeType) {
                                 case ParseNodeType.ImportFrom: {
                                     const pythonPackage =
-                                        this.moduleNameNodeToPythonPackage(parent.module) || this.projectPackage;
+                                        this.moduleNameNodeToPythonPackage(parent.d.module) || this.projectPackage;
 
                                     return this.safeModuleInit(
                                         pythonPackage,
-                                        [...parent.module.nameParts, node.name].map((part) => part.value).join('.')
+                                        [...parent.d.module.d.nameParts, node.d.name].map((part) => part.d.value).join('.')
                                     );
                                 }
                             }
@@ -1172,10 +1161,10 @@ export class TreeVisitor extends ParseTreeWalker {
             case ParseNodeType.Lambda: {
                 return ScipSymbol.local(this.counter.next());
             }
-            case ParseNodeType.ListComprehensionFor: {
+            case ParseNodeType.ComprehensionFor: {
                 return ScipSymbol.local(this.counter.next());
             }
-            case ParseNodeType.ListComprehension: {
+            case ParseNodeType.Comprehension: {
                 softAssert(false, 'Should never enter ListComprehension directly');
                 return ScipSymbol.empty();
             }
@@ -1193,7 +1182,7 @@ export class TreeVisitor extends ParseTreeWalker {
             case ParseNodeType.StatementList:
             case ParseNodeType.Tuple:
             case ParseNodeType.List:
-            case ParseNodeType.ListComprehensionIf:
+            case ParseNodeType.ComprehensionIf:
             case ParseNodeType.Argument:
             case ParseNodeType.BinaryOperation:
             // TODO: Not skilled enough to handle yet
@@ -1204,7 +1193,7 @@ export class TreeVisitor extends ParseTreeWalker {
                 softAssert(
                     false,
                     `Unhandled: ${node.nodeType}: ${ParseTreeUtils.printParseNodeType(node.nodeType)}`,
-                    ParseTreeUtils.getFileInfoFromNode(node)!.filePath
+                    ParseTreeUtils.getFileInfoFromNode(node)!.fileUri.getFilePath()
                 );
 
                 if (!node.parent) {
@@ -1217,7 +1206,7 @@ export class TreeVisitor extends ParseTreeWalker {
 
     private getFunctionSymbol(decl: FunctionDeclaration): ScipSymbol {
         const declModuleName = decl.moduleName;
-        let pythonPackage = this.guessPackage(declModuleName, decl.path);
+        let pythonPackage = this.guessPackage(declModuleName, decl.uri.getFilePath());
         if (!pythonPackage) {
             return ScipSymbol.local(this.counter.next());
         }
@@ -1227,16 +1216,16 @@ export class TreeVisitor extends ParseTreeWalker {
             const enclosingClassType = this.evaluator.getTypeOfClass(enclosingClass);
             if (enclosingClassType) {
                 let classType = enclosingClassType.classType;
-                const pythonPackage = this.guessPackage(classType.details.moduleName, classType.details.filePath);
+                const pythonPackage = this.guessPackage(classType.shared.moduleName, classType.shared.fileUri.getFilePath());
                 if (!pythonPackage) {
                     return ScipSymbol.local(this.counter.next());
                 }
-                const symbol = this.safeClass(pythonPackage, classType.details.moduleName, classType.details.name);
-                return Symbols.makeMethod(symbol, decl.node.name.value);
+                const symbol = this.safeClass(pythonPackage, classType.shared.moduleName, classType.shared.name);
+                return Symbols.makeMethod(symbol, decl.node.d.name.d.value);
             }
             return ScipSymbol.local(this.counter.next());
         } else {
-            return Symbols.makeMethod(this.safeModule(pythonPackage, declModuleName), decl.node.name.value);
+            return Symbols.makeMethod(this.safeModule(pythonPackage, declModuleName), decl.node.d.name.d.value);
         }
     }
 
@@ -1254,40 +1243,38 @@ export class TreeVisitor extends ParseTreeWalker {
         if (Types.isFunction(typeObj)) {
             // TODO: Possibly worth checking for parent declarations.
             //  I'm not sure if that will actually work though for types.
-            const decl = typeObj.details.declaration;
+            const decl = typeObj.shared.declaration;
             if (!decl) {
-                // throw 'Unhandled missing declaration for type: function';
-                // console.warn('Missing Function Decl:', node.token.value, typeObj);
                 return ScipSymbol.local(this.counter.next());
             }
             return this.getFunctionSymbol(decl);
         } else if (Types.isClass(typeObj)) {
-            const pythonPackage = this.getPackageInfo(node, typeObj.details.moduleName);
+            const pythonPackage = this.getPackageInfo(node, typeObj.shared.moduleName);
             if (!pythonPackage) {
                 return ScipSymbol.local(this.counter.next());
             }
-            return this.safeClass(pythonPackage, typeObj.details.moduleName, node.value);
+            return this.safeClass(pythonPackage, typeObj.shared.moduleName, node.d.value);
         } else if (Types.isClassInstance(typeObj)) {
             typeObj = typeObj as ClassType;
             throw 'oh yayaya';
-            // return LsifSymbol.global(this.getLsifSymbol(decl.node), Descriptor.term(node.value)).value;
         } else if (Types.isTypeVar(typeObj)) {
             throw 'typevar';
         } else if (Types.isModule(typeObj)) {
-            const pythonPackage = this.getPackageInfo(node, typeObj.moduleName);
+            const pythonPackage = this.getPackageInfo(node, typeObj.priv.moduleName);
             if (!pythonPackage) {
                 return ScipSymbol.local(this.counter.next());
             }
-            return this.safeModuleInit(pythonPackage, typeObj.moduleName);
-        } else if (Types.isOverloadedFunction(typeObj)) {
-            if (!typeObj.overloads) {
+            return this.safeModuleInit(pythonPackage, typeObj.priv.moduleName);
+        } else if (Types.isOverloaded(typeObj)) {
+            const overloads = Types.OverloadedType.getOverloads(typeObj);
+            if (!overloads || overloads.length === 0) {
                 softAssert(false, "Didn't think it would be possible to have overloaded w/ no overloads");
                 return ScipSymbol.local(this.counter.next());
             }
-            return this.typeToSymbol(node, declNode, typeObj.overloads[0]);
+            return this.typeToSymbol(node, declNode, overloads[0]);
         }
 
-        softAssert(false, `Unreachable TypeObj: ${node.value}: ${typeObj.category}`);
+        softAssert(false, `Unreachable TypeObj: ${node.d.value}: ${typeObj.category}`);
         return ScipSymbol.local(this.counter.next());
     }
 
@@ -1337,7 +1324,7 @@ export class TreeVisitor extends ParseTreeWalker {
     private isProjectFile(node: ParseNode): boolean {
         const fileInfo = getFileInfo(node);
         if (!fileInfo) return false;
-        return fileInfo.filePath.startsWith(this.config.scipConfig.projectRoot);
+        return fileInfo.fileUri.getFilePath().startsWith(this.config.scipConfig.projectRoot);
     }
 
     private packageForNode(node: ParseNode): PythonPackage | undefined {
@@ -1355,15 +1342,16 @@ export class TreeVisitor extends ParseTreeWalker {
 
         if (documentation.length === 0) {
             const nodeFileInfo = getFileInfo(node)!;
-            const hoverResult = this.program.getHoverForPosition(
-                nodeFileInfo.filePath,
+            const hoverResult = new HoverProvider(
+                this.program,
+                nodeFileInfo.fileUri,
                 convertOffsetToPosition(node.start, nodeFileInfo.lines),
                 'markdown',
                 _cancellationToken
-            );
+            ).getHover();
 
             if (hoverResult) {
-                documentation = _formatHover(hoverResult!);
+                documentation = _formatHover(hoverResult);
             }
         }
 
@@ -1406,18 +1394,19 @@ export class TreeVisitor extends ParseTreeWalker {
         }
 
         const nodeFileInfo = getFileInfo(node)!;
-        const hoverResult = this.program.getHoverForPosition(
-            nodeFileInfo.filePath,
+        const hoverResult = new HoverProvider(
+            this.program,
+            nodeFileInfo.fileUri,
             convertOffsetToPosition(node.start, nodeFileInfo.lines),
             'markdown',
             _cancellationToken
-        );
+        ).getHover();
 
         if (hoverResult) {
             this.document.symbols.push(
                 new scip.SymbolInformation({
                     symbol: symbol.value,
-                    documentation: _formatHover(hoverResult!),
+                    documentation: _formatHover(hoverResult),
                 })
             );
 
@@ -1481,8 +1470,8 @@ export class TreeVisitor extends ParseTreeWalker {
         // Try to resolve the alias while honoring external visibility.
         const resolvedAliasInfo = this.evaluator.resolveAliasDeclarationWithInfo(
             aliasDecl,
-            /* resolveLocalNames */ true,
-            /* allowExternallyHiddenAccess */ fileInfo.isStubFile
+            true,
+            { allowExternallyHiddenAccess: fileInfo.isStubFile }
         );
 
         if (!resolvedAliasInfo) {
@@ -1534,19 +1523,19 @@ export class TreeVisitor extends ParseTreeWalker {
         node: ModuleNameNode,
         decl: Declaration | undefined = undefined
     ): PythonPackage | undefined {
-        if (decl && decl.path) {
-            const p = path.resolve(decl.path);
+        if (decl && decl.uri) {
+            const p = path.resolve(decl.uri.getFilePath());
             if (p.startsWith(this.config.scipConfig.projectRoot)) {
                 return this.projectPackage;
             }
             return undefined;
         }
 
-        if (node.leadingDots > 0) {
+        if (node.d.leadingDots > 0) {
             return this.projectPackage;
         }
 
-        if (node.nameParts.length === 0) {
+        if (node.d.nameParts.length === 0) {
             softAssert(false, 'how can this be?', node);
         }
 
@@ -1579,7 +1568,7 @@ export class TreeVisitor extends ParseTreeWalker {
 
     private debugDumpAST(node: ModuleNode, fileInfo: AnalyzerFileInfo): void {
         console.log('\n=== AST DUMP ===');
-        const dumper = new TreeDumper('', fileInfo.lines);
+        const dumper = new TreeDumper(fileInfo.fileUri, fileInfo.lines);
         dumper.walk(node);
         console.log(dumper.output);
         console.log('=== END AST DUMP ===\n');
@@ -1588,25 +1577,24 @@ export class TreeVisitor extends ParseTreeWalker {
 
 function _formatModuleName(node: ModuleNameNode): string {
     let moduleName = '';
-    for (let i = 0; i < node.leadingDots; i++) {
+    for (let i = 0; i < node.d.leadingDots; i++) {
         moduleName = moduleName + '.';
     }
 
-    moduleName += node.nameParts.map((part) => part.value).join('.');
+    moduleName += node.d.nameParts.map((part) => part.d.value).join('.');
 
     return moduleName;
 }
 
-// Based off of: convertHoverResults
-//  We can do slightly differently because we expected multiple different sections
-function _formatHover(hoverResults: HoverResults): string[] {
-    return hoverResults.parts.map((part) => {
-        if (part.python) {
-            return '```python\n' + part.text + '\n```';
-        } else {
-            return part.text;
-        }
-    });
+function _formatHover(hover: Hover): string[] {
+    const contents = hover.contents;
+    if (MarkupContent.is(contents)) {
+        return [contents.value];
+    }
+    if (Array.isArray(contents)) {
+        return contents.map((c) => (typeof c === 'string' ? c : c.value));
+    }
+    return [typeof contents === 'string' ? contents : contents.value];
 }
 
 function hasAncestor(node: ParseNode, ...types: ParseNodeType[]): boolean {

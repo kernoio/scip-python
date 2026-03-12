@@ -1,106 +1,97 @@
 from _typeshed import Incomplete
-from typing import Any
 
 class ExtendedOperationContainer:
     def __init__(self, connection) -> None: ...
 
 class StandardExtendedOperations(ExtendedOperationContainer):
-    def who_am_i(self, controls: Incomplete | None = ...): ...
-    def modify_password(
-        self,
-        user: Incomplete | None = ...,
-        old_password: Incomplete | None = ...,
-        new_password: Incomplete | None = ...,
-        hash_algorithm: Incomplete | None = ...,
-        salt: Incomplete | None = ...,
-        controls: Incomplete | None = ...,
-    ): ...
+    def who_am_i(self, controls=None): ...
+    def modify_password(self, user=None, old_password=None, new_password=None, hash_algorithm=None, salt=None, controls=None): ...
     def paged_search(
         self,
         search_base,
         search_filter,
-        search_scope=...,
-        dereference_aliases=...,
-        attributes: Incomplete | None = ...,
-        size_limit: int = ...,
-        time_limit: int = ...,
-        types_only: bool = ...,
-        get_operational_attributes: bool = ...,
-        controls: Incomplete | None = ...,
-        paged_size: int = ...,
-        paged_criticality: bool = ...,
-        generator: bool = ...,
+        search_scope="SUBTREE",
+        dereference_aliases="ALWAYS",
+        attributes=None,
+        size_limit: int = 0,
+        time_limit: int = 0,
+        types_only: bool = False,
+        get_operational_attributes: bool = False,
+        controls=None,
+        paged_size: int = 100,
+        paged_criticality: bool = False,
+        generator: bool = True,
     ): ...
     def persistent_search(
         self,
-        search_base: str = ...,
-        search_filter: str = ...,
-        search_scope=...,
-        dereference_aliases=...,
-        attributes=...,
-        size_limit: int = ...,
-        time_limit: int = ...,
-        controls: Incomplete | None = ...,
-        changes_only: bool = ...,
-        show_additions: bool = ...,
-        show_deletions: bool = ...,
-        show_modifications: bool = ...,
-        show_dn_modifications: bool = ...,
-        notifications: bool = ...,
-        streaming: bool = ...,
-        callback: Incomplete | None = ...,
+        search_base: str = "",
+        search_filter: str = "(objectclass=*)",
+        search_scope="SUBTREE",
+        dereference_aliases="NEVER",
+        attributes="*",
+        size_limit: int = 0,
+        time_limit: int = 0,
+        controls=None,
+        changes_only: bool = True,
+        show_additions: bool = True,
+        show_deletions: bool = True,
+        show_modifications: bool = True,
+        show_dn_modifications: bool = True,
+        notifications: bool = True,
+        streaming: bool = True,
+        callback=None,
     ): ...
     def funnel_search(
         self,
-        search_base: str = ...,
-        search_filter: str = ...,
-        search_scope=...,
-        dereference_aliases=...,
-        attributes=...,
-        size_limit: int = ...,
-        time_limit: int = ...,
-        controls: Incomplete | None = ...,
-        streaming: bool = ...,
-        callback: Incomplete | None = ...,
+        search_base: str = "",
+        search_filter: str = "",
+        search_scope="SUBTREE",
+        dereference_aliases="NEVER",
+        attributes="*",
+        size_limit: int = 0,
+        time_limit: int = 0,
+        controls=None,
+        streaming: bool = False,
+        callback=None,
     ): ...
 
 class NovellExtendedOperations(ExtendedOperationContainer):
-    def get_bind_dn(self, controls: Incomplete | None = ...): ...
-    def get_universal_password(self, user, controls: Incomplete | None = ...): ...
-    def set_universal_password(self, user, new_password: Incomplete | None = ..., controls: Incomplete | None = ...): ...
-    def list_replicas(self, server_dn, controls: Incomplete | None = ...): ...
-    def partition_entry_count(self, partition_dn, controls: Incomplete | None = ...): ...
-    def replica_info(self, server_dn, partition_dn, controls: Incomplete | None = ...): ...
-    def start_transaction(self, controls: Incomplete | None = ...): ...
-    def end_transaction(self, commit: bool = ..., controls: Incomplete | None = ...): ...
-    def add_members_to_groups(self, members, groups, fix: bool = ..., transaction: bool = ...): ...
-    def remove_members_from_groups(self, members, groups, fix: bool = ..., transaction: bool = ...): ...
-    def check_groups_memberships(self, members, groups, fix: bool = ..., transaction: bool = ...): ...
+    def get_bind_dn(self, controls=None): ...
+    def get_universal_password(self, user, controls=None): ...
+    def set_universal_password(self, user, new_password=None, controls=None): ...
+    def list_replicas(self, server_dn, controls=None): ...
+    def partition_entry_count(self, partition_dn, controls=None): ...
+    def replica_info(self, server_dn, partition_dn, controls=None): ...
+    def start_transaction(self, controls=None): ...
+    def end_transaction(self, commit: bool = True, controls=None): ...
+    def add_members_to_groups(self, members, groups, fix: bool = True, transaction: bool = True): ...
+    def remove_members_from_groups(self, members, groups, fix: bool = True, transaction: bool = True): ...
+    def check_groups_memberships(self, members, groups, fix: bool = False, transaction: bool = True): ...
 
 class MicrosoftExtendedOperations(ExtendedOperationContainer):
     def dir_sync(
         self,
         sync_base,
-        sync_filter: str = ...,
-        attributes=...,
-        cookie: Incomplete | None = ...,
-        object_security: bool = ...,
-        ancestors_first: bool = ...,
-        public_data_only: bool = ...,
-        incremental_values: bool = ...,
-        max_length: int = ...,
-        hex_guid: bool = ...,
+        sync_filter: str = "(objectclass=*)",
+        attributes="*",
+        cookie=None,
+        object_security: bool = False,
+        ancestors_first: bool = True,
+        public_data_only: bool = False,
+        incremental_values: bool = True,
+        max_length: int = 2147483647,
+        hex_guid: bool = False,
     ): ...
-    def modify_password(self, user, new_password, old_password: Incomplete | None = ..., controls: Incomplete | None = ...): ...
+    def modify_password(self, user, new_password, old_password=None, controls=None): ...
     def unlock_account(self, user): ...
-    def add_members_to_groups(self, members, groups, fix: bool = ...): ...
-    def remove_members_from_groups(self, members, groups, fix: bool = ...): ...
+    def add_members_to_groups(self, members, groups, fix: bool = True): ...
+    def remove_members_from_groups(self, members, groups, fix: bool = True): ...
     def persistent_search(
-        self, search_base: str = ..., search_scope=..., attributes=..., streaming: bool = ..., callback: Incomplete | None = ...
+        self, search_base: str = "", search_scope="SUBTREE", attributes="*", streaming: bool = True, callback=None
     ): ...
 
 class ExtendedOperationsRoot(ExtendedOperationContainer):
-    standard: Any
-    novell: Any
-    microsoft: Any
+    standard: Incomplete
+    novell: Incomplete
+    microsoft: Incomplete
     def __init__(self, connection) -> None: ...

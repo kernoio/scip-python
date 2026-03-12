@@ -3,19 +3,20 @@
 
 
 from typing import Callable, TypeVar
-from typing_extensions import Concatenate, ParamSpec
+from typing_extensions import (  # pyright: ignore[reportMissingModuleSource]
+    Concatenate,
+    ParamSpec,
+)
 
-Pi = ParamSpec("Pi")
+P = ParamSpec("P")
 
 
-def is_inty(f: Callable[Pi, object]) -> Callable[Pi, int]:
-    ...
+def is_inty(f: Callable[P, object]) -> Callable[P, int]: ...
 
 
-Po = ParamSpec("Po")
 T = TypeVar("T")
 
 
-def outer(f: Callable[Concatenate[str, Po], object]):
+def outer(f: Callable[Concatenate[str, P], object]):
     x = is_inty(f)
-    reveal_type(x, expected_text="(str, **Po@outer) -> int")
+    reveal_type(x, expected_text="(str, **P@outer) -> int")

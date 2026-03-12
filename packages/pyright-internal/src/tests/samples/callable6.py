@@ -1,19 +1,25 @@
 # This sample tests the use of unpacked tuples in a Callable, as described
 # in PEP 646.
 
-from typing import Callable, Tuple, TypeVar, Union
-from typing_extensions import TypeVarTuple, Unpack
+from typing import Callable, TypeVar
+from typing_extensions import (  # pyright: ignore[reportMissingModuleSource]
+    TypeVarTuple,
+    Unpack,
+)
 
 _T = TypeVar("_T", bound=int)
 
-TA1 = Callable[[_T, Unpack[Tuple[int, ...]], Tuple[int, int, str], str], _T]
+TA1 = Callable[[_T, Unpack[tuple[int, ...]], tuple[int, int, str], str], _T]
 
-# This should generate an error
-TA2 = Callable[[int, Unpack[Tuple[int, ...]], Unpack[Tuple[int, int, str]], str], int]
+# This should generate an error.
+TA2 = Callable[
+    [int, Unpack[tuple[int, ...]], Unpack[tuple[int, int, str, ...]], str], int
+]
 
-TA3 = Callable[[int, Unpack[Tuple[int, int]], str], int]
+TA3 = Callable[[int, Unpack[tuple[int, int]], str], int]
 
-TA4 = Callable[[Unpack[Tuple[int, ...]]], _T]
+TA4 = Callable[[Unpack[tuple[int, ...]]], _T]
+
 
 def func1(x: TA1[int]):
     r1 = x(3, 4, 5, (1, 2, "hi"), "hi")
@@ -46,13 +52,12 @@ Ts = TypeVarTuple("Ts")
 
 
 def func3(
-    path: str, *args: Unpack[Tuple[Unpack[Ts], str]]
-) -> Union[Unpack[Tuple[Unpack[Ts], int]]]:
-    ...
+    path: str, *args: Unpack[tuple[Unpack[Ts], str]]
+) -> tuple[Unpack[Ts], int]: ...
 
 
 v3 = func3("", 1, "2", 3.3, None, "")
-reveal_type(v3, expected_text="int | str | float | None")
+reveal_type(v3, expected_text="tuple[int, str, float, None, int]")
 
 func3("", "")
 
@@ -67,17 +72,15 @@ func3("", 1, 2, 3, "hi", 1)
 
 
 def func4(
-    path: str, *args: Unpack[Tuple[Unpack[Ts], str]]
-) -> Tuple[Unpack[Ts], complex]:
-    ...
+    path: str, *args: Unpack[tuple[Unpack[Ts], str]]
+) -> tuple[Unpack[Ts], complex]: ...
 
 
 v4 = func4("", 1, "2", 3.3, None, "")
-reveal_type(v4, expected_text="Tuple[int, str, float, None, complex]")
+reveal_type(v4, expected_text="tuple[int, str, float, None, complex]")
 
 
-def func5(path: str, *args: Unpack[Tuple[str, ...]]) -> None:
-    ...
+def func5(path: str, *args: Unpack[tuple[str, ...]]) -> None: ...
 
 
 # This should generate an errors.

@@ -1,9 +1,9 @@
 import collections
 from collections.abc import Callable, Iterable, Iterator
-from datetime import datetime
+from datetime import datetime, tzinfo
 from re import Pattern
-from typing import ClassVar, overload
-from typing_extensions import Literal, TypeAlias
+from typing import ClassVar, Final, Literal, overload
+from typing_extensions import TypeAlias
 
 from dateparser import _Settings
 from dateparser.conf import Settings
@@ -13,25 +13,25 @@ from dateparser.languages.locale import Locale
 _DetectLanguagesFunction: TypeAlias = Callable[[str, float], list[str]]
 _Period: TypeAlias = Literal["time", "day", "week", "month", "year"]
 
-APOSTROPHE_LOOK_ALIKE_CHARS: list[str]
-RE_NBSP: Pattern[str]
-RE_SPACES: Pattern[str]
-RE_TRIM_SPACES: Pattern[str]
-RE_TRIM_COLONS: Pattern[str]
-RE_SANITIZE_SKIP: Pattern[str]
-RE_SANITIZE_RUSSIAN: Pattern[str]
-RE_SANITIZE_PERIOD: Pattern[str]
-RE_SANITIZE_ON: Pattern[str]
-RE_SANITIZE_APOSTROPHE: Pattern[str]
-RE_SEARCH_TIMESTAMP: Pattern[str]
-RE_SANITIZE_CROATIAN: Pattern[str]
-RE_SEARCH_NEGATIVE_TIMESTAMP: Pattern[str]
+APOSTROPHE_LOOK_ALIKE_CHARS: Final[list[str]]
+RE_NBSP: Final[Pattern[str]]
+RE_SPACES: Final[Pattern[str]]
+RE_TRIM_SPACES: Final[Pattern[str]]
+RE_TRIM_COLONS: Final[Pattern[str]]
+RE_SANITIZE_SKIP: Final[Pattern[str]]
+RE_SANITIZE_RUSSIAN: Final[Pattern[str]]
+RE_SANITIZE_PERIOD: Final[Pattern[str]]
+RE_SANITIZE_ON: Final[Pattern[str]]
+RE_SANITIZE_APOSTROPHE: Final[Pattern[str]]
+RE_SEARCH_TIMESTAMP: Final[Pattern[str]]
+RE_SANITIZE_CROATIAN: Final[Pattern[str]]
+RE_SEARCH_NEGATIVE_TIMESTAMP: Final[Pattern[str]]
 
 def sanitize_spaces(date_string: str) -> str: ...
-def date_range(begin, end, **kwargs) -> None: ...
-def get_intersecting_periods(low, high, period: str = ...) -> None: ...
+def date_range(begin: datetime, end: datetime, **kwargs) -> None: ...
+def get_intersecting_periods(low: datetime, high: datetime, period: str = "day") -> None: ...
 def sanitize_date(date_string: str) -> str: ...
-def get_date_from_timestamp(date_string: str, settings: Settings, negative: bool = ...) -> datetime | None: ...
+def get_date_from_timestamp(date_string: str, settings: Settings, negative: bool = False) -> datetime | None: ...
 def parse_with_formats(date_string: str, date_formats: Iterable[str], settings: Settings) -> DateData: ...
 
 class _DateLocaleParser:
@@ -43,22 +43,22 @@ class _DateLocaleParser:
         locale: Locale,
         date_string: str,
         date_formats: list[str] | tuple[str, ...] | set[str] | None,
-        settings: Settings | None = ...,
+        settings: Settings | None = None,
     ) -> None: ...
     @classmethod
     def parse(
         cls,
         locale: Locale,
         date_string: str,
-        date_formats: list[str] | tuple[str, ...] | set[str] | None = ...,
-        settings: Settings | None = ...,
+        date_formats: list[str] | tuple[str, ...] | set[str] | None = None,
+        settings: Settings | None = None,
     ) -> DateData: ...
     def _parse(self) -> DateData | None: ...
     def _try_timestamp(self) -> DateData: ...
     def _try_freshness_parser(self) -> DateData | None: ...
     def _try_absolute_parser(self) -> DateData | None: ...
     def _try_nospaces_parser(self) -> DateData | None: ...
-    def _try_parser(self, parse_method) -> DateData | None: ...
+    def _try_parser(self, parse_method: Callable[[str, Settings, tzinfo | None], tuple[datetime, str]]) -> DateData | None: ...
     def _try_given_formats(self) -> DateData | None: ...
     def _get_translated_date(self) -> str: ...
     def _get_translated_date_with_formatting(self) -> str: ...
@@ -68,7 +68,7 @@ class DateData:
     date_obj: datetime | None
     locale: str | None
     period: _Period | None
-    def __init__(self, *, date_obj: datetime | None = ..., period: _Period | None = ..., locale: str | None = ...) -> None: ...
+    def __init__(self, *, date_obj: datetime | None = None, period: _Period | None = None, locale: str | None = None) -> None: ...
     @overload
     def __getitem__(self, k: Literal["date_obj"]) -> datetime | None: ...
     @overload
@@ -94,15 +94,15 @@ class DateDataParser:
     previous_locales: collections.OrderedDict[Locale, None]
     def __init__(
         self,
-        languages: list[str] | tuple[str, ...] | set[str] | None = ...,
-        locales: list[str] | tuple[str, ...] | set[str] | None = ...,
-        region: str | None = ...,
-        try_previous_locales: bool = ...,
-        use_given_order: bool = ...,
-        settings: _Settings | None = ...,
-        detect_languages_function: _DetectLanguagesFunction | None = ...,
+        languages: list[str] | tuple[str, ...] | set[str] | None = None,
+        locales: list[str] | tuple[str, ...] | set[str] | None = None,
+        region: str | None = None,
+        try_previous_locales: bool = False,
+        use_given_order: bool = False,
+        settings: _Settings | None = None,
+        detect_languages_function: _DetectLanguagesFunction | None = None,
     ) -> None: ...
-    def get_date_data(self, date_string: str, date_formats: list[str] | tuple[str, ...] | set[str] | None = ...) -> DateData: ...
+    def get_date_data(self, date_string: str, date_formats: list[str] | tuple[str, ...] | set[str] | None = None) -> DateData: ...
     def get_date_tuple(self, date_string: str, date_formats: list[str] | tuple[str, ...] | set[str] | None = ...): ...
     def _get_applicable_locales(self, date_string: str) -> Iterator[Locale]: ...
     def _is_applicable_locale(self, locale: Locale, date_string: str) -> bool: ...

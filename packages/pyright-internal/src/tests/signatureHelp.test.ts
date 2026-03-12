@@ -10,7 +10,9 @@ import assert from 'assert';
 import { CancellationToken, MarkupKind } from 'vscode-languageserver';
 
 import { convertOffsetToPosition } from '../common/positionUtils';
+import { SignatureHelpProvider } from '../languageService/signatureHelpProvider';
 import { parseAndGetTestState } from './harness/fourslash/testState';
+import { PyrightDocStringService } from '../common/docStringService';
 
 test('invalid position in format string segment', () => {
     const code = `
@@ -76,15 +78,20 @@ function checkSignatureHelp(code: string, expects: boolean) {
     const state = parseAndGetTestState(code).state;
     const marker = state.getMarkerByName('marker');
 
-    const parseResults = state.workspace.service.getParseResult(marker.fileName)!;
+    const parseResults = state.workspace.service.getParseResults(marker.fileUri)!;
     const position = convertOffsetToPosition(marker.position, parseResults.tokenizerOutput.lines);
 
-    const actual = state.workspace.service.getSignatureHelpForPosition(
-        marker.fileName,
+    const actual = new SignatureHelpProvider(
+        state.workspace.service.test_program,
+        marker.fileUri,
         position,
         MarkupKind.Markdown,
+        /*hasSignatureLabelOffsetCapability*/ true,
+        /*hasActiveParameterCapability*/ true,
+        /*context*/ undefined,
+        new PyrightDocStringService(),
         CancellationToken.None
-    );
+    ).getSignatureHelp();
 
     assert.strictEqual(!!actual, expects);
 }

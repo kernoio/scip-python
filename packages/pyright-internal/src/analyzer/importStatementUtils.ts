@@ -11,19 +11,15 @@
 import { CancellationToken } from 'vscode-languageserver';
 
 import { throwIfCancellationRequested } from '../common/cancellationUtils';
-import { addIfUnique, createMapFromItems } from '../common/collectionUtils';
+import { addIfUnique, appendArray, createMapFromItems } from '../common/collectionUtils';
+import { ConfigOptions } from '../common/configOptions';
 import { TextEditAction } from '../common/editAction';
-import { FileSystem } from '../common/fileSystem';
-import {
-    getDirectoryPath,
-    getFileName,
-    getRelativePathComponentsFromDirectory,
-    isFile,
-    stripFileExtension,
-} from '../common/pathUtils';
+import { ReadOnlyFileSystem } from '../common/fileSystem';
 import { convertOffsetToPosition, convertPositionToOffset } from '../common/positionUtils';
 import { compareStringsCaseSensitive } from '../common/stringUtils';
 import { Position, Range, TextRange } from '../common/textRange';
+import { Uri } from '../common/uri/uri';
+import { isFile } from '../common/uri/uriUtils';
 import {
     ImportAsNode,
     ImportFromAsNode,
@@ -34,17 +30,23 @@ import {
     ParseNode,
     ParseNodeType,
 } from '../parser/parseNodes';
-import { ParseResults } from '../parser/parser';
+import { ParseFileResults } from '../parser/parser';
+import { TokenType } from '../parser/tokenizerTypes';
 import * as AnalyzerNodeInfo from './analyzerNodeInfo';
+import { ImportLookupResult } from './analyzerFileInfo';
 import { ModuleNameAndType } from './importResolver';
 import { ImportResult, ImportType } from './importResult';
+import { getTokenAfter, getTokenAt } from './parseTreeUtils';
 import * as SymbolNameUtils from './symbolNameUtils';
+
+const underscoreRegEx = /_/g;
+const indentTextRegEx = /^\s*$/;
 
 export interface ImportStatement {
     node: ImportNode | ImportFromNode;
     subnode?: ImportAsNode;
     importResult: ImportResult | undefined;
-    resolvedPath: string | undefined;
+    resolvedPath: Uri | undefined;
     moduleName: string;
     followsNonImportStatement: boolean;
 }
@@ -126,9 +128,9 @@ export function getTopLevelImports(parseTree: ModuleNode, includeImplicitImports
     let followsNonImportStatement = false;
     let foundFirstImportStatement = false;
 
-    parseTree.statements.forEach((statement) => {
+    parseTree.d.statements.forEach((statement) => {
         if (statement.nodeType === ParseNodeType.StatementList) {
-            statement.statements.forEach((subStatement) => {
+            statement.d.statements.forEach((subStatement) => {
                 if (subStatement.nodeType === ParseNodeType.Import) {
                     foundFirstImportStatement = true;
                     _processImportNode(subStatement, localImports, followsNonImportStatement);
@@ -169,13 +171,13 @@ function _getImportSymbolNameType(symbolName: string): number {
 export function getTextEditsForAutoImportSymbolAddition(
     importNameInfo: ImportNameInfo | ImportNameInfo[],
     importStatement: ImportStatement,
-    parseResults: ParseResults
+    parseFileResults: ParseFileResults
 ): TextEditAction[] {
     const additionEdits: AdditionEdit[] = [];
     if (
         !importStatement.node ||
         importStatement.node.nodeType !== ParseNodeType.ImportFrom ||
-        importStatement.node.isWildcardImport
+        importStatement.node.d.isWildcardImport
     ) {
         return additionEdits;
     }
@@ -186,7 +188,9 @@ export function getTextEditsForAutoImportSymbolAddition(
     importNameInfo = (Array.isArray(importNameInfo) ? importNameInfo : [importNameInfo]).filter(
         (info) =>
             !!info.name &&
-            !importFrom.imports.some((importAs) => importAs.name.value === info.name && importAs.alias === info.alias)
+            !importFrom.d.imports.some(
+                (importAs) => importAs.d.name.d.value === info.name && importAs.d.alias?.d.value === info.alias
+            )
     );
 
     if (importNameInfo.length === 0) {
@@ -195,7 +199,12 @@ export function getTextEditsForAutoImportSymbolAddition(
 
     for (const nameInfo of importNameInfo) {
         additionEdits.push(
-            _getTextEditsForAutoImportSymbolAddition(nameInfo.name!, nameInfo.alias, importStatement.node, parseResults)
+            _getTextEditsForAutoImportSymbolAddition(
+                nameInfo.name!,
+                nameInfo.alias,
+                importStatement.node,
+                parseFileResults
+            )
         );
     }
 
@@ -233,8 +242,8 @@ function _compareImportNames(name1: string, name2: string) {
     // This can't be reproduced by a normal string compare in TypeScript, since '_' > 'A'.
     // Replace all '_' with '=' which guarantees '=' < 'A'.
     // Safe to do as '=' is an invalid char in Python names.
-    const name1toCompare = name1.replace(/_/g, '=');
-    const name2toCompare = name2.replace(/_/g, '=');
+    const name1toCompare = name1.replace(underscoreRegEx, '=');
+    const name2toCompare = name2.replace(underscoreRegEx, '=');
     return compareStringsCaseSensitive(name1toCompare, name2toCompare);
 }
 
@@ -246,13 +255,13 @@ function _getTextEditsForAutoImportSymbolAddition(
     importName: string,
     alias: string | undefined,
     node: ImportFromNode,
-    parseResults: ParseResults
+    parseFileResults: ParseFileResults
 ): AdditionEdit {
     // Scan through the import symbols to find the right insertion point,
     // assuming we want to keep the imports alphabetized.
     let priorImport: ImportFromAsNode | undefined;
-    for (const curImport of node.imports) {
-        if (_compareImportNames(curImport.name.value, importName) > 0) {
+    for (const curImport of node.d.imports) {
+        if (_compareImportNames(curImport.d.name.d.value, importName) > 0) {
             break;
         }
 
@@ -269,26 +278,26 @@ function _getTextEditsForAutoImportSymbolAddition(
     //   )
     let useOnePerLineFormatting = false;
     let indentText = '';
-    if (node.imports.length > 0) {
-        const importStatementPos = convertOffsetToPosition(node.start, parseResults.tokenizerOutput.lines);
-        const firstSymbolPos = convertOffsetToPosition(node.imports[0].start, parseResults.tokenizerOutput.lines);
+    if (node.d.imports.length > 0) {
+        const importStatementPos = convertOffsetToPosition(node.start, parseFileResults.tokenizerOutput.lines);
+        const firstSymbolPos = convertOffsetToPosition(node.d.imports[0].start, parseFileResults.tokenizerOutput.lines);
         const secondSymbolPos =
-            node.imports.length > 1
-                ? convertOffsetToPosition(node.imports[1].start, parseResults.tokenizerOutput.lines)
+            node.d.imports.length > 1
+                ? convertOffsetToPosition(node.d.imports[1].start, parseFileResults.tokenizerOutput.lines)
                 : undefined;
 
         if (
             firstSymbolPos.line > importStatementPos.line &&
             (secondSymbolPos === undefined || secondSymbolPos.line > firstSymbolPos.line)
         ) {
-            const firstSymbolLineRange = parseResults.tokenizerOutput.lines.getItemAt(firstSymbolPos.line);
+            const firstSymbolLineRange = parseFileResults.tokenizerOutput.lines.getItemAt(firstSymbolPos.line);
 
             // Use the same combination of spaces or tabs to match
             // existing formatting.
-            indentText = parseResults.text.substr(firstSymbolLineRange.start, firstSymbolPos.character);
+            indentText = parseFileResults.text.substr(firstSymbolLineRange.start, firstSymbolPos.character);
 
             // Is the indent text composed of whitespace only?
-            if (/^\s*$/.test(indentText)) {
+            if (indentTextRegEx.test(indentText)) {
                 useOnePerLineFormatting = true;
             }
         }
@@ -296,16 +305,16 @@ function _getTextEditsForAutoImportSymbolAddition(
 
     const insertionOffset = priorImport
         ? TextRange.getEnd(priorImport)
-        : node.imports.length > 0
-        ? node.imports[0].start
+        : node.d.imports.length > 0
+        ? node.d.imports[0].start
         : node.start + node.length;
-    const insertionPosition = convertOffsetToPosition(insertionOffset, parseResults.tokenizerOutput.lines);
+    const insertionPosition = convertOffsetToPosition(insertionOffset, parseFileResults.tokenizerOutput.lines);
 
     const insertText = alias ? `${importName} as ${alias}` : `${importName}`;
     let replacementText: string;
 
     if (useOnePerLineFormatting) {
-        const eol = parseResults.tokenizerOutput.predominantEndOfLineSequence;
+        const eol = parseFileResults.tokenizerOutput.predominantEndOfLineSequence;
         replacementText = priorImport ? `,${eol}${indentText}${insertText}` : `${insertText},${eol}${indentText}`;
     } else {
         replacementText = priorImport ? `, ${insertText}` : `${insertText}, `;
@@ -329,7 +338,7 @@ interface InsertionEdit {
 export function getTextEditsForAutoImportInsertions(
     importNameInfo: ImportNameWithModuleInfo[] | ImportNameWithModuleInfo,
     importStatements: ImportStatements,
-    parseResults: ParseResults,
+    parseFileResults: ParseFileResults,
     invocationPosition: Position
 ): TextEditAction[] {
     const insertionEdits: InsertionEdit[] = [];
@@ -341,19 +350,20 @@ export function getTextEditsForAutoImportInsertions(
 
     const map = createMapFromItems(importNameInfo, (i) => `${i.module.moduleName}-${i.nameForImportFrom ?? ''}`);
     for (const importInfo of map.values()) {
-        insertionEdits.push(
-            ..._getInsertionEditsForAutoImportInsertion(
+        appendArray(
+            insertionEdits,
+            _getInsertionEditsForAutoImportInsertion(
                 importInfo,
                 { name: importInfo[0].module.moduleName, nameForImportFrom: importInfo[0].nameForImportFrom },
                 importStatements,
                 getImportGroupFromModuleNameAndType(importInfo[0].module),
-                parseResults,
+                parseFileResults,
                 invocationPosition
             )
         );
     }
 
-    return _convertInsertionEditsToTextEdits(parseResults, insertionEdits);
+    return _convertInsertionEditsToTextEdits(parseFileResults, insertionEdits);
 }
 
 export function getTextEditsForAutoImportInsertion(
@@ -361,7 +371,7 @@ export function getTextEditsForAutoImportInsertion(
     moduleNameInfo: ModuleNameInfo,
     importStatements: ImportStatements,
     importGroup: ImportGroup,
-    parseResults: ParseResults,
+    parseFileResults: ParseFileResults,
     invocationPosition: Position
 ): TextEditAction[] {
     const insertionEdits = _getInsertionEditsForAutoImportInsertion(
@@ -369,14 +379,14 @@ export function getTextEditsForAutoImportInsertion(
         moduleNameInfo,
         importStatements,
         importGroup,
-        parseResults,
+        parseFileResults,
         invocationPosition
     );
 
-    return _convertInsertionEditsToTextEdits(parseResults, insertionEdits);
+    return _convertInsertionEditsToTextEdits(parseFileResults, insertionEdits);
 }
 
-function _convertInsertionEditsToTextEdits(parseResults: ParseResults, insertionEdits: InsertionEdit[]) {
+function _convertInsertionEditsToTextEdits(parseFileResults: ParseFileResults, insertionEdits: InsertionEdit[]) {
     if (insertionEdits.length < 2) {
         return insertionEdits.map((e) => getTextEdit(e));
     }
@@ -398,7 +408,7 @@ function _convertInsertionEditsToTextEdits(parseResults: ParseResults, insertion
                     editGroup
                         .map((e) => e.importStatement)
                         .sort((a, b) => compareImports(a, b))
-                        .join(parseResults.tokenizerOutput.predominantEndOfLineSequence) +
+                        .join(parseFileResults.tokenizerOutput.predominantEndOfLineSequence) +
                     editGroup[0].postChange,
             });
         }
@@ -427,7 +437,7 @@ function _getInsertionEditsForAutoImportInsertion(
     moduleNameInfo: ModuleNameInfo,
     importStatements: ImportStatements,
     importGroup: ImportGroup,
-    parseResults: ParseResults,
+    parseFileResults: ParseFileResults,
     invocationPosition: Position
 ): InsertionEdit[] {
     const insertionEdits: InsertionEdit[] = [];
@@ -478,7 +488,7 @@ function _getInsertionEditsForAutoImportInsertion(
                 importStatements,
                 moduleNameInfo.name,
                 importGroup,
-                parseResults,
+                parseFileResults,
                 invocationPosition
             )
         );
@@ -490,14 +500,14 @@ function _getInsertionEditForAutoImportInsertion(
     importStatements: ImportStatements,
     moduleName: string,
     importGroup: ImportGroup,
-    parseResults: ParseResults,
+    parseFileResults: ParseFileResults,
     invocationPosition: Position
 ): InsertionEdit {
     let preChange = '';
     let postChange = '';
 
     let insertionPosition: Position;
-    const invocation = convertPositionToOffset(invocationPosition, parseResults.tokenizerOutput.lines)!;
+    const invocation = convertPositionToOffset(invocationPosition, parseFileResults.tokenizerOutput.lines)!;
     if (importStatements.orderedImports.length > 0 && invocation > importStatements.orderedImports[0].node.start) {
         let insertBefore = true;
         let insertionImport = importStatements.orderedImports[0];
@@ -515,12 +525,14 @@ function _getInsertionEditForAutoImportInsertion(
             if (importGroup < curImportGroup) {
                 if (!insertBefore && prevImportGroup < importGroup) {
                     // Add an extra line to create a new group.
-                    preChange = parseResults.tokenizerOutput.predominantEndOfLineSequence + preChange;
+                    preChange = parseFileResults.tokenizerOutput.predominantEndOfLineSequence + preChange;
                 }
                 break;
             }
 
             if (importGroup === curImportGroup && curImport.moduleName > moduleName) {
+                insertBefore = true;
+                insertionImport = curImport;
                 break;
             }
 
@@ -529,7 +541,7 @@ function _getInsertionEditForAutoImportInsertion(
             if (curImport.followsNonImportStatement) {
                 if (importGroup > prevImportGroup) {
                     // Add an extra line to create a new group.
-                    preChange = parseResults.tokenizerOutput.predominantEndOfLineSequence + preChange;
+                    preChange = parseFileResults.tokenizerOutput.predominantEndOfLineSequence + preChange;
                 }
                 break;
             }
@@ -538,7 +550,7 @@ function _getInsertionEditForAutoImportInsertion(
             if (curImport === importStatements.orderedImports[importStatements.orderedImports.length - 1]) {
                 if (importGroup > curImportGroup) {
                     // Add an extra line to create a new group.
-                    preChange = parseResults.tokenizerOutput.predominantEndOfLineSequence + preChange;
+                    preChange = parseFileResults.tokenizerOutput.predominantEndOfLineSequence + preChange;
                 }
             }
 
@@ -555,14 +567,14 @@ function _getInsertionEditForAutoImportInsertion(
 
         if (insertionImport) {
             if (insertBefore) {
-                postChange = postChange + parseResults.tokenizerOutput.predominantEndOfLineSequence;
+                postChange = postChange + parseFileResults.tokenizerOutput.predominantEndOfLineSequence;
             } else {
-                preChange = parseResults.tokenizerOutput.predominantEndOfLineSequence + preChange;
+                preChange = parseFileResults.tokenizerOutput.predominantEndOfLineSequence + preChange;
             }
 
             insertionPosition = convertOffsetToPosition(
                 insertBefore ? insertionImport.node.start : TextRange.getEnd(insertionImport.node),
-                parseResults.tokenizerOutput.lines
+                parseFileResults.tokenizerOutput.lines
             );
         } else {
             insertionPosition = { line: 0, character: 0 };
@@ -573,17 +585,17 @@ function _getInsertionEditForAutoImportInsertion(
         insertionPosition = { line: 0, character: 0 };
         let addNewLineBefore = false;
 
-        for (const statement of parseResults.parseTree.statements) {
+        for (const statement of parseFileResults.parserOutput.parseTree.d.statements) {
             let stopHere = true;
-            if (statement.nodeType === ParseNodeType.StatementList && statement.statements.length === 1) {
-                const simpleStatement = statement.statements[0];
+            if (statement.nodeType === ParseNodeType.StatementList && statement.d.statements.length === 1) {
+                const simpleStatement = statement.d.statements[0];
 
                 if (simpleStatement.nodeType === ParseNodeType.StringList) {
                     // Assume that it's a file header doc string.
                     stopHere = false;
                 } else if (simpleStatement.nodeType === ParseNodeType.Assignment) {
-                    if (simpleStatement.leftExpression.nodeType === ParseNodeType.Name) {
-                        if (SymbolNameUtils.isDunderName(simpleStatement.leftExpression.value)) {
+                    if (simpleStatement.d.leftExpr.nodeType === ParseNodeType.Name) {
+                        if (SymbolNameUtils.isDunderName(simpleStatement.d.leftExpr.d.value)) {
                             // Assume that it's an assignment of __copyright__, __author__, etc.
                             stopHere = false;
                         }
@@ -592,13 +604,13 @@ function _getInsertionEditForAutoImportInsertion(
             }
 
             if (stopHere) {
-                insertionPosition = convertOffsetToPosition(statement.start, parseResults.tokenizerOutput.lines);
+                insertionPosition = convertOffsetToPosition(statement.start, parseFileResults.tokenizerOutput.lines);
                 addNewLineBefore = false;
                 break;
             } else {
                 insertionPosition = convertOffsetToPosition(
                     statement.start + statement.length,
-                    parseResults.tokenizerOutput.lines
+                    parseFileResults.tokenizerOutput.lines
                 );
                 addNewLineBefore = true;
             }
@@ -606,12 +618,12 @@ function _getInsertionEditForAutoImportInsertion(
 
         postChange =
             postChange +
-            parseResults.tokenizerOutput.predominantEndOfLineSequence +
-            parseResults.tokenizerOutput.predominantEndOfLineSequence;
+            parseFileResults.tokenizerOutput.predominantEndOfLineSequence +
+            parseFileResults.tokenizerOutput.predominantEndOfLineSequence;
         if (addNewLineBefore) {
-            preChange = parseResults.tokenizerOutput.predominantEndOfLineSequence + preChange;
+            preChange = parseFileResults.tokenizerOutput.predominantEndOfLineSequence + preChange;
         } else {
-            postChange = postChange + parseResults.tokenizerOutput.predominantEndOfLineSequence;
+            postChange = postChange + parseFileResults.tokenizerOutput.predominantEndOfLineSequence;
         }
     }
 
@@ -620,12 +632,12 @@ function _getInsertionEditForAutoImportInsertion(
 }
 
 function _processImportNode(node: ImportNode, localImports: ImportStatements, followsNonImportStatement: boolean) {
-    node.list.forEach((importAsNode) => {
-        const importResult = AnalyzerNodeInfo.getImportInfo(importAsNode.module);
-        let resolvedPath: string | undefined;
+    node.d.list.forEach((importAsNode) => {
+        const importResult = AnalyzerNodeInfo.getImportInfo(importAsNode.d.module);
+        let resolvedPath: Uri | undefined;
 
         if (importResult && importResult.isImportFound) {
-            resolvedPath = importResult.resolvedPaths[importResult.resolvedPaths.length - 1];
+            resolvedPath = importResult.resolvedUris[importResult.resolvedUris.length - 1];
         }
 
         const localImport: ImportStatement = {
@@ -633,19 +645,19 @@ function _processImportNode(node: ImportNode, localImports: ImportStatements, fo
             subnode: importAsNode,
             importResult,
             resolvedPath,
-            moduleName: _formatModuleName(importAsNode.module),
+            moduleName: formatModuleName(importAsNode.d.module),
             followsNonImportStatement,
         };
 
         localImports.orderedImports.push(localImport);
 
         // Add it to the map.
-        if (resolvedPath) {
+        if (resolvedPath && !resolvedPath.isEmpty()) {
             // Don't overwrite existing import or import from statements
             // because we always want to prefer 'import from' over 'import'
             // in the map.
-            if (!localImports.mapByFilePath.has(resolvedPath)) {
-                localImports.mapByFilePath.set(resolvedPath, localImport);
+            if (!localImports.mapByFilePath.has(resolvedPath.key)) {
+                localImports.mapByFilePath.set(resolvedPath.key, localImport);
             }
         }
     });
@@ -657,20 +669,22 @@ function _processImportFromNode(
     followsNonImportStatement: boolean,
     includeImplicitImports: boolean
 ) {
-    const importResult = AnalyzerNodeInfo.getImportInfo(node.module);
-    let resolvedPath: string | undefined;
+    const importResult = AnalyzerNodeInfo.getImportInfo(node.d.module);
+    let resolvedPath: Uri | undefined;
 
     if (importResult && importResult.isImportFound) {
-        resolvedPath = importResult.resolvedPaths[importResult.resolvedPaths.length - 1];
+        resolvedPath = importResult.resolvedUris[importResult.resolvedUris.length - 1];
     }
 
     if (includeImplicitImports && importResult) {
         localImports.implicitImports = localImports.implicitImports ?? new Map<string, ImportFromAsNode>();
 
-        for (const implicitImport of importResult.implicitImports) {
-            const importFromAs = node.imports.find((i) => i.name.value === implicitImport.name);
-            if (importFromAs) {
-                localImports.implicitImports.set(implicitImport.path, importFromAs);
+        if (importResult.implicitImports) {
+            for (const implicitImport of importResult.implicitImports.values()) {
+                const importFromAs = node.d.imports.find((i) => i.d.name.d.value === implicitImport.name);
+                if (importFromAs) {
+                    localImports.implicitImports.set(implicitImport.uri.key, importFromAs);
+                }
             }
         }
     }
@@ -679,15 +693,15 @@ function _processImportFromNode(
         node,
         importResult,
         resolvedPath,
-        moduleName: _formatModuleName(node.module),
+        moduleName: formatModuleName(node.d.module),
         followsNonImportStatement,
     };
 
     localImports.orderedImports.push(localImport);
 
     // Add it to the map.
-    if (resolvedPath) {
-        const prevEntry = localImports.mapByFilePath.get(resolvedPath);
+    if (resolvedPath && !resolvedPath.isEmpty()) {
+        const prevEntry = localImports.mapByFilePath.get(resolvedPath.key);
         // Overwrite existing import statements because we always want to prefer
         // 'import from' over 'import'. Also, overwrite existing 'import from' if
         // the module name is shorter.
@@ -696,18 +710,18 @@ function _processImportFromNode(
             prevEntry.node.nodeType === ParseNodeType.Import ||
             prevEntry.moduleName.length > localImport.moduleName.length
         ) {
-            localImports.mapByFilePath.set(resolvedPath, localImport);
+            localImports.mapByFilePath.set(resolvedPath.key, localImport);
         }
     }
 }
 
-function _formatModuleName(node: ModuleNameNode): string {
+export function formatModuleName(node: ModuleNameNode): string {
     let moduleName = '';
-    for (let i = 0; i < node.leadingDots; i++) {
+    for (let i = 0; i < node.d.leadingDots; i++) {
         moduleName = moduleName + '.';
     }
 
-    moduleName += node.nameParts.map((part) => part.value).join('.');
+    moduleName += node.d.nameParts.map((part) => part.d.value).join('.');
 
     return moduleName;
 }
@@ -729,11 +743,11 @@ export function getContainingImportStatement(node: ParseNode | undefined, token:
 export function getAllImportNames(node: ImportNode | ImportFromNode) {
     if (node.nodeType === ParseNodeType.Import) {
         const importNode = node as ImportNode;
-        return importNode.list;
+        return importNode.d.list;
     }
 
     const importFromNode = node as ImportFromNode;
-    return importFromNode.imports;
+    return importFromNode.d.imports;
 }
 
 export function getImportGroupFromModuleNameAndType(moduleNameAndType: ModuleNameAndType): ImportGroup {
@@ -748,6 +762,7 @@ export function getImportGroupFromModuleNameAndType(moduleNameAndType: ModuleNam
 }
 
 export function getTextRangeForImportNameDeletion(
+    parseFileResults: ParseFileResults,
     nameNodes: ImportAsNode[] | ImportFromAsNode[],
     ...nameNodeIndexToDelete: number[]
 ): TextRange[] {
@@ -756,14 +771,15 @@ export function getTextRangeForImportNameDeletion(
         const startNode = nameNodes[pair.start];
         const endNode = nameNodes[pair.end];
 
-        if (pair.start === 0 && nameNodes.length === pair.end - pair.start + 1) {
+        if (pair.start === 0 && nameNodes.length === pair.end + 1) {
             // get span of whole statement. ex) "import [|A|]" or "import [|A, B|]"
             editSpans.push(TextRange.fromBounds(startNode.start, TextRange.getEnd(endNode)));
         } else if (pair.end === nameNodes.length - 1) {
             // get span of "import A[|, B|]" or "import A[|, B, C|]"
-            const start = TextRange.getEnd(nameNodes[pair.start - 1]);
-            const length = TextRange.getEnd(endNode) - start;
-            editSpans.push({ start, length });
+            const previousNode = nameNodes[pair.start - 1];
+            editSpans.push(
+                ...getEditsPreservingFirstCommentAfterCommaIfExist(parseFileResults, previousNode, startNode, endNode)
+            );
         } else {
             // get span of "import [|A, |]B" or "import [|A, B,|] C"
             const start = startNode.start;
@@ -772,6 +788,46 @@ export function getTextRangeForImportNameDeletion(
         }
     }
     return editSpans;
+}
+
+function getEditsPreservingFirstCommentAfterCommaIfExist(
+    parseFileResults: ParseFileResults,
+    previousNode: ParseNode,
+    startNode: ParseNode,
+    endNode: ParseNode
+): TextRange[] {
+    const offsetOfPreviousNodeEnd = TextRange.getEnd(previousNode);
+    const startingToken = getTokenAt(parseFileResults.tokenizerOutput.tokens, startNode.start);
+    if (!startingToken || !startingToken.comments || startingToken.comments.length === 0) {
+        const length = TextRange.getEnd(endNode) - offsetOfPreviousNodeEnd;
+        return [{ start: offsetOfPreviousNodeEnd, length }];
+    }
+
+    const commaToken = getTokenAfter(
+        parseFileResults.tokenizerOutput.tokens,
+        TextRange.getEnd(previousNode),
+        (t) => t.type === TokenType.Comma
+    );
+    if (!commaToken) {
+        const length = TextRange.getEnd(endNode) - offsetOfPreviousNodeEnd;
+        return [{ start: offsetOfPreviousNodeEnd, length }];
+    }
+
+    // We have code something like
+    //  previousNode, #comment
+    //  startNode,
+    //  endNode
+    //
+    // Make sure we preserve #comment when deleting start/end nodes so we have
+    //  previousNode #comment
+    // as final result.
+    const lengthToComma = TextRange.getEnd(commaToken) - offsetOfPreviousNodeEnd;
+    const offsetToCommentEnd = TextRange.getEnd(startingToken.comments[startingToken.comments.length - 1]);
+    const length = TextRange.getEnd(endNode) - offsetToCommentEnd;
+    return [
+        { start: offsetOfPreviousNodeEnd, length: lengthToComma },
+        { start: offsetToCommentEnd, length },
+    ];
 }
 
 function getConsecutiveNumberPairs(indices: number[]) {
@@ -808,24 +864,32 @@ function getConsecutiveNumberPairs(indices: number[]) {
 }
 
 export function getRelativeModuleName(
-    fs: FileSystem,
-    sourcePath: string,
-    targetPath: string,
+    fs: ReadOnlyFileSystem,
+    sourcePath: Uri,
+    targetPath: Uri,
+    configOptions: ConfigOptions,
     ignoreFolderStructure = false,
     sourceIsFile?: boolean
 ) {
     let srcPath = sourcePath;
     sourceIsFile = sourceIsFile !== undefined ? sourceIsFile : isFile(fs, sourcePath);
     if (sourceIsFile) {
-        srcPath = getDirectoryPath(sourcePath);
+        srcPath = sourcePath.getDirectory();
     }
 
     let symbolName: string | undefined;
     let destPath = targetPath;
+    if (
+        (configOptions.stubPath && destPath.isChild(configOptions.stubPath)) ||
+        (configOptions.typeshedPath && destPath.isChild(configOptions.typeshedPath))
+    ) {
+        // Always use absolute imports for files in these library-like directories.
+        return undefined;
+    }
     if (sourceIsFile) {
-        destPath = getDirectoryPath(targetPath);
+        destPath = targetPath.getDirectory();
 
-        const fileName = stripFileExtension(getFileName(targetPath));
+        const fileName = targetPath.stripAllExtensions().fileName;
         if (fileName !== '__init__') {
             // ex) src: a.py, dest: b.py -> ".b" will be returned.
             symbolName = fileName;
@@ -834,18 +898,18 @@ export function getRelativeModuleName(
             //     like how it would return for sibling folder.
             //
             // if folder structure is not ignored, ".." will be returned
-            symbolName = getFileName(destPath);
-            destPath = getDirectoryPath(destPath);
+            symbolName = destPath.fileName;
+            destPath = destPath.getDirectory();
         }
     }
 
-    const relativePaths = getRelativePathComponentsFromDirectory(srcPath, destPath, (f) => fs.realCasePath(f));
+    const relativePaths = srcPath.getRelativePathComponents(destPath);
 
     // This assumes both file paths are under the same importing root.
     // So this doesn't handle paths pointing to 2 different import roots.
     // ex) user file A to library file B
     let currentPaths = '.';
-    for (let i = 1; i < relativePaths.length; i++) {
+    for (let i = 0; i < relativePaths.length; i++) {
         const relativePath = relativePaths[i];
         if (relativePath === '..') {
             currentPaths += '.';
@@ -866,25 +930,25 @@ export function getRelativeModuleName(
     return currentPaths;
 }
 
-export function getDirectoryLeadingDotsPointsTo(fromDirectory: string, leadingDots: number) {
+export function getDirectoryLeadingDotsPointsTo(fromDirectory: Uri, leadingDots: number) {
     let currentDirectory = fromDirectory;
     for (let i = 1; i < leadingDots; i++) {
-        if (currentDirectory === '') {
+        if (currentDirectory.isRoot()) {
             return undefined;
         }
 
-        currentDirectory = getDirectoryPath(currentDirectory);
+        currentDirectory = currentDirectory.getDirectory();
     }
 
     return currentDirectory;
 }
 
 export function getResolvedFilePath(importResult: ImportResult | undefined) {
-    if (!importResult || !importResult.isImportFound || importResult.resolvedPaths.length === 0) {
+    if (!importResult || !importResult.isImportFound || importResult.resolvedUris.length === 0) {
         return undefined;
     }
 
-    if (importResult.resolvedPaths.length === 1 && importResult.resolvedPaths[0] === '') {
+    if (importResult.resolvedUris.length === 1 && importResult.resolvedUris[0].equals(Uri.empty())) {
         // Import is resolved to namespace package folder.
         if (importResult.packageDirectory) {
             return importResult.packageDirectory;
@@ -899,7 +963,7 @@ export function getResolvedFilePath(importResult: ImportResult | undefined) {
     }
 
     // Regular case.
-    return importResult.resolvedPaths[importResult.resolvedPaths.length - 1];
+    return importResult.resolvedUris[importResult.resolvedUris.length - 1];
 }
 
 export function haveSameParentModule(module1: string[], module2: string[]) {
@@ -915,4 +979,26 @@ export function haveSameParentModule(module1: string[], module2: string[]) {
     }
 
     return i === module1.length - 1;
+}
+
+// Helper function to get the list of names that would be imported by a wildcard import
+export function getWildcardImportNames(lookupInfo: ImportLookupResult): string[] {
+    const namesToImport: string[] = [];
+
+    // If a dunder all symbol is defined, it takes precedence.
+    if (lookupInfo.dunderAllNames) {
+        if (!lookupInfo.usesUnsupportedDunderAllForm) {
+            return lookupInfo.dunderAllNames;
+        }
+
+        appendArray(namesToImport, lookupInfo.dunderAllNames);
+    }
+
+    lookupInfo.symbolTable.forEach((symbol, name) => {
+        if (!symbol.isExternallyHidden() && !name.startsWith('_')) {
+            namesToImport!.push(name);
+        }
+    });
+
+    return namesToImport;
 }

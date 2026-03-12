@@ -1,6 +1,7 @@
-from _typeshed import Incomplete, SupportsWrite
-from collections.abc import Awaitable, Callable, Generator, Iterable, Iterator, Mapping
-from typing import Generic, NoReturn, TypeVar, overload
+from _typeshed import SupportsWrite
+from asyncio import Future
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
+from typing import NoReturn, TypeVar, overload
 from typing_extensions import Self
 
 from .std import tqdm as std_tqdm
@@ -9,22 +10,22 @@ __all__ = ["tqdm_asyncio", "tarange", "tqdm", "trange"]
 
 _T = TypeVar("_T")
 
-class tqdm_asyncio(Generic[_T], std_tqdm[_T]):
+class tqdm_asyncio(std_tqdm[_T]):
     iterable_awaitable: bool
     iterable_next: Callable[[], _T | Awaitable[_T]]
     iterable_iterator: Iterator[_T]
 
     def __aiter__(self) -> Self: ...
-    async def __anext__(self) -> Awaitable[_T]: ...
+    async def __anext__(self) -> _T: ...
     def send(self, *args, **kwargs): ...
     @classmethod
     def as_completed(
         cls,
         fs: Iterable[Awaitable[_T]],
         *,
-        loop: bool | None = ...,
-        timeout: float | None = ...,
-        total: int | None = ...,
+        loop: bool | None = None,
+        timeout: float | None = None,
+        total: int | None = None,
         desc: str | None = ...,
         leave: bool | None = ...,
         file: SupportsWrite[str] | None = ...,
@@ -48,14 +49,14 @@ class tqdm_asyncio(Generic[_T], std_tqdm[_T]):
         nrows: int | None = ...,
         colour: str | None = ...,
         delay: float | None = ...,
-    ) -> Generator[Incomplete, Incomplete, None]: ...
+    ) -> Iterator[Future[_T]]: ...
     @classmethod
     async def gather(
         cls,
         *fs: Awaitable[_T],
-        loop: bool | None = ...,
-        timeout: float | None = ...,
-        total: int | None = ...,
+        loop: bool | None = None,
+        timeout: float | None = None,
+        total: int | None = None,
         iterable: Iterable[_T] = ...,
         desc: str | None = ...,
         leave: bool | None = ...,
@@ -80,11 +81,11 @@ class tqdm_asyncio(Generic[_T], std_tqdm[_T]):
         nrows: int | None = ...,
         colour: str | None = ...,
         delay: float | None = ...,
-    ): ...
+    ) -> list[_T]: ...
     @overload
     def __init__(
         self,
-        iterable: Iterable[_T],
+        iterable: Iterable[_T] | AsyncIterator[_T],
         desc: str | None = ...,
         total: float | None = ...,
         leave: bool | None = ...,
@@ -115,7 +116,7 @@ class tqdm_asyncio(Generic[_T], std_tqdm[_T]):
     @overload
     def __init__(
         self: tqdm_asyncio[NoReturn],
-        iterable: None = ...,
+        iterable: None = None,
         desc: str | None = ...,
         total: float | None = ...,
         leave: bool | None = ...,

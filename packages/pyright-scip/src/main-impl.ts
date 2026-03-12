@@ -54,27 +54,13 @@ function applyFilterToOptions(options: IndexOptions, repoRoot: string): void {
     options.extraPaths = siblingAbsPaths;
 }
 
-export function indexAction(options: IndexOptions): void {
-    setQuiet(options.quiet);
-    if (options.showProgressRateLimit !== undefined) {
-        setShowProgressRateLimit(options.showProgressRateLimit);
-    }
-
+function runSingleThreaded(options: IndexOptions, outputFile: string): void {
     const projectRoot = options.cwd;
     const environment = options.environment;
-
-    if (options.filter) {
-        applyFilterToOptions(options, path.resolve(projectRoot));
-    }
-
-    const originalWorkdir = process.cwd();
-    process.chdir(projectRoot);
-
-    const outputFile = path.isAbsolute(options.output) ? options.output : path.join(projectRoot, options.output);
     const output = fs.openSync(outputFile, 'w');
 
     try {
-        let indexer = new Indexer({
+        const indexer = new Indexer({
             ...options,
             projectRoot,
             environment,
@@ -85,8 +71,34 @@ export function indexAction(options: IndexOptions): void {
         });
 
         sendStatus(`Indexing ${projectRoot} with version ${indexer.scipConfig.projectVersion}`);
-
         indexer.index();
+    } catch (e) {
+        fs.closeSync(output);
+        throw e;
+    }
+
+    fs.closeSync(output);
+}
+
+export function indexAction(options: IndexOptions): void {
+    setQuiet(options.quiet);
+    if (options.showProgressRateLimit !== undefined) {
+        setShowProgressRateLimit(options.showProgressRateLimit);
+    }
+
+    const projectRoot = options.cwd;
+
+    if (options.filter) {
+        applyFilterToOptions(options, path.resolve(projectRoot));
+    }
+
+    const originalWorkdir = process.cwd();
+    process.chdir(projectRoot);
+
+    const outputFile = path.isAbsolute(options.output) ? options.output : path.join(projectRoot, options.output);
+
+    try {
+        runSingleThreaded(options, outputFile);
     } catch (e) {
         console.warn(
             '\n\nExperienced Fatal Error While Indexing:\nPlease create an issue at github.com/sourcegraph/scip-python:',
@@ -95,8 +107,6 @@ export function indexAction(options: IndexOptions): void {
         process.chdir(originalWorkdir);
         exit(1);
     }
-
-    fs.close(output);
 
     process.chdir(originalWorkdir);
 }
@@ -117,7 +127,7 @@ function snapshotAction(snapshotRoot: string, options: SnapshotOptions): void {
         console.assert(fs.lstatSync(projectRoot).isDirectory());
         console.log(`Output path = ${options.output}`);
 
-        indexAction({
+        runSingleThreaded({
             projectName: options.projectName,
             projectVersion: options.projectVersion,
             projectNamespace: options.projectNamespace,
@@ -129,7 +139,7 @@ function snapshotAction(snapshotRoot: string, options: SnapshotOptions): void {
             infer: { projectVersionFromCommit: false },
             quiet: options.quiet,
             showProgressRateLimit: undefined,
-        });
+        }, path.join(projectRoot, options.output));
 
         const scipIndexPath = path.join(projectRoot, options.output);
         const scipIndex = scip.Index.deserializeBinary(fs.readFileSync(scipIndexPath));

@@ -1,6 +1,4 @@
-import { normalizePathCase, isFileSystemCaseSensitive } from 'pyright-internal/common/pathUtils';
-import { PyrightFileSystem } from 'pyright-internal/pyrightFileSystem';
-import { createFromRealFileSystem } from 'pyright-internal/common/realFileSystem';
+import { CaseSensitivityDetector } from 'pyright-internal/common/caseSensitivityDetector';
 
 export enum SeenCondition {
     AlwaysFalse = 'always-false',
@@ -65,7 +63,7 @@ function assertSometimesImpl(enableFlag: boolean, check: () => boolean, key: str
     }
 }
 
-const _fs = new PyrightFileSystem(createFromRealFileSystem());
+const _caseSensitiveDetector: CaseSensitivityDetector = { isCaseSensitive: () => true };
 
 export function assertAlways(check: () => boolean, message: () => string): void {
     assertAlwaysImpl(_assertionFlags.otherChecks, check, message);
@@ -75,8 +73,12 @@ export function assertSometimes(check: () => boolean, key: string): void {
     assertSometimesImpl(_assertionFlags.otherChecks, check, key);
 }
 
+function _normalizePathCase(path: string): string {
+    return _caseSensitiveDetector.isCaseSensitive(path) ? path : path.toLowerCase();
+}
+
 export function assertNeverNormalized(path: string): void {
-    const normalized = normalizePathCase(_fs, path);
+    const normalized = _normalizePathCase(path);
     assertAlwaysImpl(
         _assertionFlags.pathNormalizationChecks,
         () => normalized !== path,
@@ -85,7 +87,7 @@ export function assertNeverNormalized(path: string): void {
 }
 
 export function assertAlwaysNormalized(path: string): void {
-    const normalized = normalizePathCase(_fs, path);
+    const normalized = _normalizePathCase(path);
     assertAlwaysImpl(
         _assertionFlags.pathNormalizationChecks,
         () => normalized === path,
@@ -94,7 +96,7 @@ export function assertAlwaysNormalized(path: string): void {
 }
 
 export function assertSometimesNormalized(path: string, key: string): void {
-    const normalized = normalizePathCase(_fs, path);
+    const normalized = _normalizePathCase(path);
     assertSometimesImpl(_assertionFlags.pathNormalizationChecks, () => normalized === path, key);
 }
 

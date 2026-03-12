@@ -1,9 +1,8 @@
 import bdb
 from _typeshed import Incomplete
 
-from win32com.axdebug.util import trace
-from win32com.server.util import unwrap as unwrap
-from win32comext.axdebug import gateways as gateways
+from win32comext.axdebug import gateways
+from win32comext.axdebug.util import trace
 
 def fnull(*args) -> None: ...
 
@@ -37,6 +36,7 @@ class Adb(bdb.Bdb, gateways.RemoteDebugApplicationEvents):
     logicalbotframe: Incomplete
     currentframe: Incomplete
     recursiveData: Incomplete
+    def __init__(self) -> None: ...
     def canonic(self, fname): ...
     def reset(self) -> None: ...
     def stop_here(self, frame): ...

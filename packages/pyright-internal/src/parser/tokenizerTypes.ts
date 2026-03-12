@@ -37,6 +37,10 @@ export const enum TokenType {
     Dot,
     Arrow,
     Backtick,
+    ExclamationMark,
+    FStringStart,
+    FStringMiddle,
+    FStringEnd,
 }
 
 export const enum NewLineType {
@@ -162,10 +166,15 @@ export const enum StringTokenFlags {
     Unicode = 1 << 4,
     Bytes = 1 << 5,
     Format = 1 << 6,
+    Template = 1 << 7,
+
+    // Other conditions
+    ReplacementFieldStart = 1 << 8,
+    ReplacementFieldEnd = 1 << 9,
+    NamedUnicodeEscape = 1 << 10,
 
     // Error conditions
     Unterminated = 1 << 16,
-    ExceedsMaxSize = 1 << 17,
 }
 
 export const enum CommentType {
@@ -311,6 +320,10 @@ export namespace KeywordToken {
 
         return token;
     }
+
+    export function isSoftKeyword(token: KeywordToken) {
+        return softKeywords.some((t) => token.keywordType === t);
+    }
 }
 
 export interface StringToken extends Token {
@@ -347,6 +360,81 @@ export namespace StringToken {
             prefixLength,
             quoteMarkLength: flags & StringTokenFlags.Triplicate ? 3 : 1,
             comments,
+        };
+
+        return token;
+    }
+}
+
+export interface FStringStartToken extends Token {
+    readonly type: TokenType.FStringStart;
+    readonly flags: StringTokenFlags;
+
+    // Number of characters in token that appear before
+    // the quote marks (e.g. "r" or "UR").
+    readonly prefixLength: number;
+
+    // Number of characters in token that make up the quote
+    // (either 1 or 3).
+    readonly quoteMarkLength: number;
+}
+
+export namespace FStringStartToken {
+    export function create(
+        start: number,
+        length: number,
+        flags: StringTokenFlags,
+        prefixLength: number,
+        comments: Comment[] | undefined
+    ) {
+        const token: FStringStartToken = {
+            start,
+            length,
+            type: TokenType.FStringStart,
+            flags,
+            prefixLength,
+            quoteMarkLength: flags & StringTokenFlags.Triplicate ? 3 : 1,
+            comments,
+        };
+
+        return token;
+    }
+}
+
+export interface FStringMiddleToken extends Token {
+    readonly type: TokenType.FStringMiddle;
+    readonly flags: StringTokenFlags;
+
+    // Use StringTokenUtils to convert escaped value to unescaped value.
+    readonly escapedValue: string;
+}
+
+export namespace FStringMiddleToken {
+    export function create(start: number, length: number, flags: StringTokenFlags, escapedValue: string) {
+        const token: FStringMiddleToken = {
+            start,
+            length,
+            type: TokenType.FStringMiddle,
+            flags,
+            escapedValue,
+        };
+
+        return token;
+    }
+}
+
+export interface FStringEndToken extends Token {
+    readonly type: TokenType.FStringEnd;
+    readonly flags: StringTokenFlags;
+}
+
+export namespace FStringEndToken {
+    export function create(start: number, length: number, flags: StringTokenFlags) {
+        const token: FStringEndToken = {
+            start,
+            length,
+            type: TokenType.FStringEnd,
+            flags,
         };
 
         return token;

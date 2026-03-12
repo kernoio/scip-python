@@ -9,200 +9,262 @@
 
 import type * as fs from 'fs';
 
-import { getOrAdd } from './common/collectionUtils';
-import {
-    FileSystem,
-    FileWatcher,
-    FileWatcherEventHandler,
-    MkDirOptions,
-    Stats,
-    TmpfileOptions,
-    VirtualDirent,
-} from './common/fileSystem';
-import { combinePaths, ensureTrailingDirectorySeparator, getDirectoryPath, getFileName } from './common/pathUtils';
+import { FileSystem, MkDirOptions, Stats, VirtualDirent } from './common/fileSystem';
+import { FileWatcher, FileWatcherEventHandler } from './common/fileWatcher';
+import { Uri } from './common/uri/uri';
+import { UriMap } from './common/uri/uriMap';
+import { Disposable } from 'vscode-jsonrpc';
+
+interface MappedEntry {
+    mappedUri: Uri;
+    originalUri: Uri;
+    filter: (uri: Uri, fs: FileSystem) => boolean;
+}
 
 export class ReadOnlyAugmentedFileSystem implements FileSystem {
-    // Mapped file to original file map
-    private readonly _entryMap = new Map<string, string>();
+    // Mapped (fake location) directory to original directory map
+    private readonly _entryMap = new UriMap<MappedEntry>();
 
-    // Original file to mapped file map
-    private readonly _reverseEntryMap = new Map<string, string>();
+    // Original directory to mapped (fake location) directory map
+    private readonly _reverseEntryMap = new UriMap<MappedEntry>();
 
-    // Mapped files per a containing folder map
-    private readonly _folderMap = new Map<string, { name: string; isFile: boolean }[]>();
+    constructor(protected realFS: FileSystem) {}
 
-    constructor(protected _realFS: FileSystem) {}
-
-    existsSync(path: string): boolean {
-        if (this._isMovedEntry(path)) {
-            // Pretend partial stub folder and its files not exist
+    existsSync(uri: Uri): boolean {
+        if (this._isOriginalPath(uri)) {
+            // Pretend original files don't exist anymore. They are only in their mapped location.
             return false;
         }
 
-        return this._realFS.existsSync(this._getOriginalPath(path));
+        return this.realFS.existsSync(this._getInternalOriginalUri(uri));
     }
 
-    mkdirSync(path: string, options?: MkDirOptions): void {
+    mkdirSync(uri: Uri, options?: MkDirOptions): void {
         throw new Error('Operation is not allowed.');
     }
 
-    chdir(path: string): void {
+    chdir(uri: Uri): void {
         throw new Error('Operation is not allowed.');
     }
 
-    readdirEntriesSync(path: string): fs.Dirent[] {
-        const maybeDirectory = ensureTrailingDirectorySeparator(path);
+    readdirEntriesSync(uri: Uri): fs.Dirent[] {
+        // Stick all entries in a map by name to make sure we don't have duplicates.
+        const entries = new Map<string, fs.Dirent>();
 
-        const entries: fs.Dirent[] = [];
-        const movedEntries = this._folderMap.get(maybeDirectory);
-        if (!movedEntries || this._realFS.existsSync(path)) {
-            entries.push(
-                ...this._realFS.readdirEntriesSync(path).filter((item) => {
-                    // Filter out the stub package directory and any
-                    // entries that will be overwritten by stub package
-                    // virtual items.
-                    return (
-                        !this._isMovedEntry(combinePaths(path, item.name)) &&
-                        !movedEntries?.some((movedEntry) => movedEntry.name === item.name)
-                    );
-                })
-            );
+        // Handle the case where the directory has children that are remappings.
+        // Example:
+        // uri: /lib/site-packages
+        // mapping: /lib/site-packages/foo -> /lib/site-packages/foo-stubs
+        // We should show 'foo' as a directory in this case.
+        for (const [key] of this._entryMap.entries()) {
+            if (key.isChild(uri) && key.getRelativePathComponents(uri).length === 1) {
+                entries.set(key.fileName, new VirtualDirent(key.fileName, false, uri.getFilePath()));
+            }
         }
 
-        if (!movedEntries) {
-            return entries;
+        // Handle the case where we're looking at a mapped directory (or a child).
+        // Example:
+        // uri: /lib/site-packages/foo/module
+        // mapping: /lib/site-packages/foo -> /lib/site-packages/foo-stubs
+        // We should list all of the children of /lib/site-packages/foo-stubs/module.
+        const mappedEntry = this._getOriginalEntry(uri);
+        if (mappedEntry) {
+            const originalUri = this._getInternalOriginalUri(uri);
+            const filteredEntries = this.realFS
+                .readdirEntriesSync(originalUri)
+                .filter((e) => mappedEntry.filter(originalUri.combinePaths(e.name), this.realFS))
+                .map((e) => new VirtualDirent(e.name, e.isFile(), uri.getFilePath()));
+            for (const entry of filteredEntries) {
+                entries.set(entry.name, entry);
+            }
         }
 
-        return entries.concat(movedEntries.map((e) => new VirtualDirent(e.name, e.isFile)));
-    }
-
-    readdirSync(path: string): string[] {
-        return this.readdirEntriesSync(path).map((p) => p.name);
-    }
-
-    readFileSync(path: string, encoding?: null): Buffer;
-    readFileSync(path: string, encoding: BufferEncoding): string;
-    readFileSync(path: string, encoding?: BufferEncoding | null): string | Buffer {
-        return this._realFS.readFileSync(this._getOriginalPath(path), encoding);
-    }
-
-    writeFileSync(path: string, data: string | Buffer, encoding: BufferEncoding | null): void {
-        throw new Error('Operation is not allowed.');
-    }
-
-    statSync(path: string): Stats {
-        return this._realFS.statSync(this._getOriginalPath(path));
-    }
-
-    unlinkSync(path: string): void {
-        throw new Error('Operation is not allowed.');
-    }
-
-    realpathSync(path: string): string {
-        if (this._entryMap.has(path)) {
-            return path;
+        if (this.realFS.existsSync(uri)) {
+            // Get our real entries, but filter out entries that are mapped to a different location.
+            // Example:
+            // uri: /lib/site-packages/foo-stubs
+            // mapping: /lib/site-packages/foo -> /lib/site-packages/foo-stubs
+            // We should list all of the children of /lib/site-packages/foo-stubs but only if they don't match the filter
+            const filteredEntries = this.realFS
+                .readdirEntriesSync(uri)
+                .filter((e) => !this._isOriginalPath(uri.combinePaths(e.name)));
+            for (const entry of filteredEntries) {
+                entries.set(entry.name, entry);
+            }
         }
 
-        return this._realFS.realpathSync(path);
+        return [...entries.values()];
     }
 
-    getModulePath(): string {
-        return this._realFS.getModulePath();
+    readdirSync(uri: Uri): string[] {
+        return this.readdirEntriesSync(uri).map((p) => p.name);
     }
 
-    createFileSystemWatcher(paths: string[], listener: FileWatcherEventHandler): FileWatcher {
-        return this._realFS.createFileSystemWatcher(paths, listener);
+    readFileSync(uri: Uri, encoding?: null): Buffer;
+    readFileSync(uri: Uri, encoding: BufferEncoding): string;
+    readFileSync(uri: Uri, encoding?: BufferEncoding | null): string | Buffer {
+        return this.realFS.readFileSync(this._getInternalOriginalUri(uri), encoding);
     }
 
-    createReadStream(path: string): fs.ReadStream {
-        return this._realFS.createReadStream(this._getOriginalPath(path));
-    }
-
-    createWriteStream(path: string): fs.WriteStream {
+    writeFileSync(uri: Uri, data: string | Buffer, encoding: BufferEncoding | null): void {
         throw new Error('Operation is not allowed.');
     }
 
-    copyFileSync(src: string, dst: string): void {
+    statSync(uri: Uri): Stats {
+        if (this._isOriginalPath(uri)) {
+            // Pretend original files don't exist anymore. They are only in their mapped location.
+            throw new Error('ENOENT: path does not exist');
+        }
+        return this.realFS.statSync(this._getInternalOriginalUri(uri));
+    }
+
+    rmdirSync(uri: Uri): void {
+        throw new Error('Operation is not allowed.');
+    }
+
+    unlinkSync(uri: Uri): void {
+        throw new Error('Operation is not allowed.');
+    }
+
+    realpathSync(uri: Uri): Uri {
+        if (this._entryMap.has(uri)) {
+            return uri;
+        }
+
+        return this.realFS.realpathSync(uri);
+    }
+
+    getModulePath(): Uri {
+        return this.realFS.getModulePath();
+    }
+
+    createFileSystemWatcher(paths: Uri[], listener: FileWatcherEventHandler): FileWatcher {
+        return this.realFS.createFileSystemWatcher(paths, listener);
+    }
+
+    createReadStream(uri: Uri): fs.ReadStream {
+        return this.realFS.createReadStream(this._getInternalOriginalUri(uri));
+    }
+
+    createWriteStream(uri: Uri): fs.WriteStream {
+        throw new Error('Operation is not allowed.');
+    }
+
+    copyFileSync(src: Uri, dst: Uri): void {
         throw new Error('Operation is not allowed.');
     }
 
     // Async I/O
-    readFile(path: string): Promise<Buffer> {
-        return this._realFS.readFile(this._getOriginalPath(path));
+    readFile(uri: Uri): Promise<Buffer> {
+        return this.realFS.readFile(this._getInternalOriginalUri(uri));
     }
 
-    readFileText(path: string, encoding?: BufferEncoding): Promise<string> {
-        return this._realFS.readFileText(this._getOriginalPath(path), encoding);
+    readFileText(uri: Uri, encoding?: BufferEncoding): Promise<string> {
+        return this.realFS.readFileText(this._getInternalOriginalUri(uri), encoding);
     }
 
-    // The directory returned by tmpdir must exist and be the same each time tmpdir is called.
-    tmpdir(): string {
-        return this._realFS.tmpdir();
-    }
-
-    tmpfile(options?: TmpfileOptions): string {
-        return this._realFS.tmpfile(options);
-    }
-
-    realCasePath(path: string): string {
-        return this._realFS.realCasePath(path);
-    }
-
-    getUri(originalPath: string): string {
-        return this._realFS.getUri(originalPath);
+    realCasePath(uri: Uri): Uri {
+        return this.realFS.realCasePath(uri);
     }
 
     // See whether the file is mapped to another location.
-    isMappedFilePath(filepath: string): boolean {
-        return this._entryMap.has(filepath) || this._realFS.isMappedFilePath(filepath);
+    isMappedUri(fileUri: Uri): boolean {
+        if (this._getOriginalEntry(fileUri) !== undefined) {
+            return true;
+        }
+        return this.realFS.isMappedUri(fileUri);
     }
 
     // Get original filepath if the given filepath is mapped.
-    getOriginalFilePath(mappedFilePath: string) {
-        return this._realFS.getOriginalFilePath(this._getOriginalPath(mappedFilePath));
+    getOriginalUri(mappedFileUri: Uri) {
+        const internalUri = this._getInternalOriginalUri(mappedFileUri);
+        return this.realFS.getOriginalUri(internalUri);
     }
 
     // Get mapped filepath if the given filepath is mapped.
-    getMappedFilePath(originalFilepath: string) {
-        const mappedFilePath = this._realFS.getMappedFilePath(originalFilepath);
-        return this._reverseEntryMap.get(mappedFilePath) ?? mappedFilePath;
-    }
-
-    isInZipOrEgg(path: string): boolean {
-        return this._realFS.isInZipOrEgg(path);
-    }
-
-    dispose(): void {
-        this._realFS.dispose();
-    }
-
-    protected _recordMovedEntry(mappedPath: string, originalPath: string, reversible = true, isFile = true) {
-        this._entryMap.set(mappedPath, originalPath);
-
-        if (reversible) {
-            this._reverseEntryMap.set(originalPath, mappedPath);
+    getMappedUri(originalFileUri: Uri) {
+        const entry = this._getMappedEntry(originalFileUri);
+        if (!entry) {
+            return this.realFS.getMappedUri(originalFileUri);
         }
-
-        const directory = ensureTrailingDirectorySeparator(getDirectoryPath(mappedPath));
-        const folderInfo = getOrAdd(this._folderMap, directory, () => []);
-
-        const name = getFileName(mappedPath);
-        if (!folderInfo.some((entry) => entry.name === name)) {
-            folderInfo.push({ name, isFile });
-        }
+        const relative = entry.originalUri.getRelativePathComponents(originalFileUri);
+        return entry.mappedUri.combinePaths(...relative);
     }
 
-    protected _getOriginalPath(mappedFilePath: string) {
-        return this._entryMap.get(mappedFilePath) ?? mappedFilePath;
+    isInZip(uri: Uri): boolean {
+        return this.realFS.isInZip(uri);
     }
 
-    protected _isMovedEntry(path: string) {
-        return this._reverseEntryMap.has(path);
+    mapDirectory(mappedUri: Uri, originalUri: Uri, filter?: (originalUri: Uri, fs: FileSystem) => boolean): Disposable {
+        const entry: MappedEntry = { originalUri, mappedUri, filter: filter ?? (() => true) };
+        this._entryMap.set(mappedUri, entry);
+        this._reverseEntryMap.set(originalUri, entry);
+        return {
+            dispose: () => {
+                this._entryMap.delete(mappedUri);
+                this._reverseEntryMap.delete(originalUri);
+            },
+        };
     }
 
-    protected _clear() {
+    protected clear() {
         this._entryMap.clear();
         this._reverseEntryMap.clear();
-        this._folderMap.clear();
+    }
+
+    private _findClosestMatch(uri: Uri, map: UriMap<MappedEntry>): MappedEntry | undefined {
+        // Search through the map of directories to find the closest match. The
+        // closest match is the longest path that is a parent of the uri.
+        while (true) {
+            const entry = map.get(uri);
+            if (entry) {
+                return entry;
+            }
+
+            const parent = uri.getDirectory();
+            if (parent.equals(uri)) {
+                return undefined;
+            }
+
+            uri = parent;
+        }
+    }
+
+    private _getOriginalEntry(uri: Uri): MappedEntry | undefined {
+        return this._findClosestMatch(uri, this._entryMap);
+    }
+
+    // Returns the original uri if the given uri is a mapped uri in this file system's
+    // internal mapping. getOriginalUri is different in that it will also ask the realFS
+    // if it has a mapping too.
+    private _getInternalOriginalUri(uri: Uri): Uri {
+        const entry = this._getOriginalEntry(uri);
+        if (!entry) {
+            return uri;
+        }
+        const relative = entry.mappedUri.getRelativePathComponents(uri);
+        const original = entry.originalUri.combinePaths(...relative);
+
+        // Make sure this original URI passes the filter too.
+        if (entry.filter(original, this.realFS)) {
+            return original;
+        }
+
+        return uri;
+    }
+
+    private _getMappedEntry(uri: Uri): MappedEntry | undefined {
+        const reverseMatch = this._findClosestMatch(uri, this._reverseEntryMap);
+
+        // Uri in this case is an original Uri. It should also match the filter.
+        if (reverseMatch && reverseMatch.filter(uri, this.realFS)) {
+            return reverseMatch;
+        }
+        return undefined;
+    }
+
+    private _isOriginalPath(uri: Uri): boolean {
+        // If the uri is a child of any reverse entry or equals a reversed entry, then it is an original entry.
+        return this._getMappedEntry(uri) !== undefined;
     }
 }

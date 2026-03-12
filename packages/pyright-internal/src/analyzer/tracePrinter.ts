@@ -8,24 +8,27 @@
 
 import { isNumber, isString } from '../common/core';
 import { assertNever } from '../common/debug';
-import { ensureTrailingDirectorySeparator, stripFileExtension } from '../common/pathUtils';
+import { stripFileExtension } from '../common/pathUtils';
 import { convertOffsetToPosition } from '../common/positionUtils';
-import { isExpressionNode, ParseNode, ParseNodeType } from '../parser/parseNodes';
+import { Uri } from '../common/uri/uri';
+import { ParseNode, ParseNodeType, isExpressionNode } from '../parser/parseNodes';
 import { AbsoluteModuleDescriptor } from './analyzerFileInfo';
 import * as AnalyzerNodeInfo from './analyzerNodeInfo';
 import { Declaration, DeclarationType } from './declaration';
 import * as ParseTreeUtils from './parseTreeUtils';
 import { Symbol } from './symbol';
-import { Type, TypeBase, TypeCategory } from './types';
+import { OverloadedType, Type, TypeBase, TypeCategory } from './types';
+
+const separatorRegExp = /[\\/]/g;
 
 export type PrintableType = ParseNode | Declaration | Symbol | Type | undefined;
 
 export interface TracePrinter {
     print(o: PrintableType): string;
-    printFileOrModuleName(filePathOrModule: string | AbsoluteModuleDescriptor): string;
+    printFileOrModuleName(fileUriOrModule: Uri | AbsoluteModuleDescriptor): string;
 }
 
-export function createTracePrinter(roots: string[]): TracePrinter {
+export function createTracePrinter(roots: Uri[], includeRoots: boolean = false): TracePrinter {
     function wrap(value: string | undefined, ch = "'") {
         return value ? `${ch}${value}${ch}` : '';
     }
@@ -33,25 +36,22 @@ export function createTracePrinter(roots: string[]): TracePrinter {
     // Sort roots in desc order so that we compare longer path first
     // when getting relative path.
     // ex) d:/root/.env/lib/site-packages, d:/root/.env
-    roots = roots
-        .map((r) => ensureTrailingDirectorySeparator(r))
-        .sort((a, b) => a.localeCompare(b))
-        .reverse();
+    roots = roots.sort((a, b) => a.key.localeCompare(b.key)).reverse();
 
-    const separatorRegExp = /[\\/]/g;
-    function printFileOrModuleName(filePathOrModule: string | AbsoluteModuleDescriptor | undefined) {
-        if (filePathOrModule) {
-            if (typeof filePathOrModule === 'string') {
+    function printFileOrModuleName(fileUriOrModule: Uri | AbsoluteModuleDescriptor | undefined) {
+        if (fileUriOrModule) {
+            if (Uri.is(fileUriOrModule)) {
                 for (const root of roots) {
-                    if (filePathOrModule.startsWith(root)) {
-                        const subFile = filePathOrModule.substring(root.length);
-                        return stripFileExtension(subFile).replace(separatorRegExp, '.');
+                    if (fileUriOrModule.isChild(root)) {
+                        const subFile = root.getRelativePath(fileUriOrModule);
+                        const stripped = stripFileExtension(subFile!).replace(separatorRegExp, '.');
+                        return includeRoots ? `${root.fileName}:${stripped}` : stripped;
                     }
                 }
 
-                return filePathOrModule;
-            } else if (filePathOrModule.nameParts) {
-                return filePathOrModule.nameParts.join('.');
+                return fileUriOrModule.toUserVisibleString();
+            } else if (fileUriOrModule.nameParts) {
+                return fileUriOrModule.nameParts.join('.');
             }
         }
         return '';
@@ -61,41 +61,40 @@ export function createTracePrinter(roots: string[]): TracePrinter {
         if (type) {
             switch (type.category) {
                 case TypeCategory.Any:
-                    return `Any ${wrap(type.typeAliasInfo?.fullName)}`;
+                    return `Any ${wrap(type.props?.typeAliasInfo?.shared.fullName)}`;
 
                 case TypeCategory.Class:
                     if (TypeBase.isInstantiable(type)) {
-                        return `Class '${type.details.name}' (${type.details.moduleName})`;
+                        return `Class '${type.shared.name}' (${type.shared.moduleName})`;
                     } else {
-                        return `Object '${type.details.name}' (${type.details.moduleName})`;
+                        return `Object '${type.shared.name}' (${type.shared.moduleName})`;
                     }
 
                 case TypeCategory.Function:
-                    return `Function '${type.details.name}' (${type.details.moduleName})`;
+                    return `Function '${type.shared.name}' (${type.shared.moduleName})`;
 
                 case TypeCategory.Module:
-                    return `Module '${type.moduleName}' (${type.moduleName})`;
+                    return `Module '${type.priv.moduleName}' (${type.priv.moduleName})`;
 
                 case TypeCategory.Never:
-                    return `Never ${wrap(type.typeAliasInfo?.fullName)}`;
+                    return `Never ${wrap(type.props?.typeAliasInfo?.shared.fullName)}`;
 
-                case TypeCategory.None:
-                    return `None ${wrap(type.typeAliasInfo?.fullName)}`;
-
-                case TypeCategory.OverloadedFunction:
-                    return `OverloadedFunction [${type.overloads.map((o) => wrap(printType(o), '"')).join(',')}]`;
+                case TypeCategory.Overloaded:
+                    return `Overloaded [${OverloadedType.getOverloads(type)
+                        .map((o) => wrap(printType(o), '"'))
+                        .join(',')}]`;
 
                 case TypeCategory.TypeVar:
-                    return `TypeVar '${type.details.name}' ${wrap(type.typeAliasInfo?.fullName)}`;
+                    return `TypeVar '${type.shared.name}' ${wrap(type.props?.typeAliasInfo?.shared.fullName)}`;
 
                 case TypeCategory.Unbound:
-                    return `Unbound ${wrap(type.typeAliasInfo?.fullName)}`;
+                    return `Unbound ${wrap(type.props?.typeAliasInfo?.shared.fullName)}`;
 
                 case TypeCategory.Union:
-                    return `Union [${type.subtypes.map((o) => wrap(printType(o), '"')).join(',')}]`;
+                    return `Union [${type.priv.subtypes.map((o) => wrap(printType(o), '"')).join(',')}]`;
 
                 case TypeCategory.Unknown:
-                    return `Unknown ${wrap(type.typeAliasInfo?.fullName)}`;
+                    return `Unknown ${wrap(type.props?.typeAliasInfo?.shared.fullName)}`;
 
                 default:
                     assertNever(type);
@@ -120,33 +119,33 @@ export function createTracePrinter(roots: string[]): TracePrinter {
         if (decl) {
             switch (decl.type) {
                 case DeclarationType.Alias:
-                    return `Alias, ${printNode(decl.node)} (${printFileOrModuleName(decl.path)})`;
+                    return `Alias, ${printNode(decl.node)} (${printFileOrModuleName(decl.uri)})`;
 
                 case DeclarationType.Class:
-                    return `Class, ${printNode(decl.node)} (${printFileOrModuleName(decl.path)})`;
+                    return `Class, ${printNode(decl.node)} (${printFileOrModuleName(decl.uri)})`;
 
                 case DeclarationType.Function:
-                    return `Function, ${printNode(decl.node)} (${printFileOrModuleName(decl.path)})`;
+                    return `Function, ${printNode(decl.node)} (${printFileOrModuleName(decl.uri)})`;
 
                 case DeclarationType.Intrinsic:
                     return `Intrinsic, ${printNode(decl.node)} ${decl.intrinsicType} (${printFileOrModuleName(
-                        decl.path
+                        decl.uri
                     )})`;
 
-                case DeclarationType.Parameter:
-                    return `Parameter, ${printNode(decl.node)} (${printFileOrModuleName(decl.path)})`;
+                case DeclarationType.Param:
+                    return `Param, ${printNode(decl.node)} (${printFileOrModuleName(decl.uri)})`;
 
-                case DeclarationType.TypeParameter:
-                    return `TypeParameter, ${printNode(decl.node)} (${printFileOrModuleName(decl.path)})`;
+                case DeclarationType.TypeParam:
+                    return `TypeParam, ${printNode(decl.node)} (${printFileOrModuleName(decl.uri)})`;
 
                 case DeclarationType.SpecialBuiltInClass:
-                    return `SpecialBuiltInClass, ${printNode(decl.node)} (${printFileOrModuleName(decl.path)})`;
+                    return `SpecialBuiltInClass, ${printNode(decl.node)} (${printFileOrModuleName(decl.uri)})`;
 
                 case DeclarationType.Variable:
-                    return `Variable, ${printNode(decl.node)} (${printFileOrModuleName(decl.path)})`;
+                    return `Variable, ${printNode(decl.node)} (${printFileOrModuleName(decl.uri)})`;
 
                 case DeclarationType.TypeAlias:
-                    return `TypeAlias, ${printNode(decl.node)} (${printFileOrModuleName(decl.path)})`;
+                    return `TypeAlias, ${printNode(decl.node)} (${printFileOrModuleName(decl.uri)})`;
 
                 default:
                     assertNever(decl);
@@ -177,7 +176,7 @@ export function createTracePrinter(roots: string[]): TracePrinter {
             return '';
         }
 
-        let path = printPath ? `(${printFileOrModuleName(getFileInfo(node)?.filePath)})` : '';
+        let path = printPath ? `(${printFileOrModuleName(getFileInfo(node)?.fileUri)})` : '';
 
         const fileInfo = getFileInfo(node);
         if (fileInfo?.lines) {
@@ -191,33 +190,35 @@ export function createTracePrinter(roots: string[]): TracePrinter {
 
         switch (node.nodeType) {
             case ParseNodeType.ImportAs:
-                return `importAs '${printNode(node.module)}' ${wrap(node.alias ? printNode(node.alias) : '')} ${path}`;
+                return `importAs '${printNode(node.d.module)}' ${wrap(
+                    node.d.alias ? printNode(node.d.alias) : ''
+                )} ${path}`;
 
             case ParseNodeType.ImportFrom:
-                return `importFrom [${node.imports.map((i) => wrap(printNode(i), '"')).join(',')}]`;
+                return `importFrom [${node.d.imports.map((i) => wrap(printNode(i), '"')).join(',')}]`;
 
             case ParseNodeType.ImportFromAs:
-                return `ImportFromAs '${printNode(node.name)}' ${wrap(
-                    node.alias ? printNode(node.alias) : ''
+                return `ImportFromAs '${printNode(node.d.name)}' ${wrap(
+                    node.d.alias ? printNode(node.d.alias) : ''
                 )} ${path}`;
 
             case ParseNodeType.Module:
                 return `module ${path}`;
 
             case ParseNodeType.Class:
-                return `class '${printNode(node.name)}' ${path}`;
+                return `class '${printNode(node.d.name)}' ${path}`;
 
             case ParseNodeType.Function:
-                return `function '${printNode(node.name)}' ${path}`;
+                return `function '${printNode(node.d.name)}' ${path}`;
 
             case ParseNodeType.ModuleName:
-                return `moduleName '${node.nameParts.map((n) => printNode(n)).join('.')}' ${path}`;
+                return `moduleName '${node.d.nameParts.map((n) => printNode(n)).join('.')}' ${path}`;
 
             case ParseNodeType.Argument:
-                return `argument '${node.name ? printNode(node.name) : 'N/A'}' ${path}`;
+                return `argument '${node.d.name ? printNode(node.d.name) : 'N/A'}' ${path}`;
 
             case ParseNodeType.Parameter:
-                return `parameter '${node.name ? printNode(node.name) : 'N/A'}' ${path}`;
+                return `parameter '${node.d.name ? printNode(node.d.name) : 'N/A'}' ${path}`;
 
             default:
                 return `${ParseTreeUtils.printParseNodeType(node.nodeType)} ${path}`;
@@ -231,7 +232,7 @@ export function createTracePrinter(roots: string[]): TracePrinter {
 
     function isDeclaration(o: any): o is Declaration {
         const d = o as Declaration;
-        return d && isNumber(d.type) && isString(d.path) && isString(d.moduleName);
+        return d && isNumber(d.type) && Uri.is(d.uri) && isString(d.moduleName);
     }
 
     function isType(o: any): o is Type {

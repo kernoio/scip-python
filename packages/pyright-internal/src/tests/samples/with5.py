@@ -1,19 +1,17 @@
 # This sample tests the case of a context manager within a try/except block.
 
-from typing import Optional, ContextManager
+from typing import ContextManager
 
 
-def create_context() -> ContextManager[str]:
-    ...
+def create_context() -> ContextManager[str]: ...
 
 
-def possible_exception() -> None:
-    ...
+def possible_exception() -> None: ...
 
 
 def func1():
-    x: Optional[str] = None
-    ctx: Optional[str] = None
+    x: str | None = None
+    ctx: str | None = None
     try:
         with create_context() as ctx:
             x = "0"
@@ -24,7 +22,7 @@ def func1():
 
 
 def func2():
-    ctx: Optional[str] = None
+    ctx: str | None = None
     try:
         with create_context() as ctx:
             possible_exception()

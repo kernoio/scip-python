@@ -1,4 +1,4 @@
-/// <reference path="fourslash.ts" />
+/// <reference path="typings/fourslash.d.ts" />
 
 // @filename: declare.py
 //// my_variable = "Hello, world!"
@@ -9,13 +9,9 @@
 //// print(greeting)
 
 {
-    const ranges = helper.getRanges();
-
     helper.verifyShowCallHierarchyGetIncomingCalls({
         marker: {
-            references: ranges.map((r) => {
-                return { path: r.fileName, range: helper.convertPositionRange(r) };
-            }),
+            items: [],
         },
     });
 }

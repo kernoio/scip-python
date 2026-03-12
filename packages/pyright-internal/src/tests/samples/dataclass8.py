@@ -2,21 +2,29 @@
 # circular type references within dataclass definitions.
 
 from dataclasses import dataclass
+from pathlib import Path
 
 
 @dataclass
-class BaseClass:
-    my_ref: "ReferredClass"
+class ParentA:
+    b: "ClassB"
 
 
 @dataclass
-class SubClass(BaseClass):
+class ChildA(ParentA):
     pass
 
 
 @dataclass
-class ReferredClass:
-    sub_class: SubClass
+class ClassB:
+    sub_class: ChildA
 
-    def trigger_bug(self):
-        SubClass(my_ref=self)
+    def method1(self):
+        ChildA(b=self)
+
+
+@dataclass()
+class ClassC:
+    name: str = "sample"
+    dir_a: Path = Path.home().joinpath(f"source/{name}")
+    dir_b: Path = dir_a.joinpath("path/to/b")

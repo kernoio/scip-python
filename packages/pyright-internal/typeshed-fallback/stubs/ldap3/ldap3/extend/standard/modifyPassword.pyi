@@ -1,5 +1,3 @@
-from _typeshed import Incomplete
-
 from ...extend.operation import ExtendedOperation
 from ...protocol.rfc3062 import PasswdModifyRequestValue, PasswdModifyResponseValue
 
@@ -10,13 +8,6 @@ class ModifyPassword(ExtendedOperation):
     response_attribute: str
     def config(self) -> None: ...
     def __init__(
-        self,
-        connection,
-        user: Incomplete | None = ...,
-        old_password: Incomplete | None = ...,
-        new_password: Incomplete | None = ...,
-        hash_algorithm: Incomplete | None = ...,
-        salt: Incomplete | None = ...,
-        controls: Incomplete | None = ...,
+        self, connection, user=None, old_password=None, new_password=None, hash_algorithm=None, salt=None, controls=None
     ) -> None: ...
     def populate_result(self) -> None: ...

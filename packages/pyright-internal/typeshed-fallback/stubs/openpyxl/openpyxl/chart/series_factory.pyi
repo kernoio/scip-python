@@ -1,9 +1,9 @@
-from _typeshed import Incomplete
+from .reference import Reference
 
 def SeriesFactory(
-    values,
-    xvalues: Incomplete | None = ...,
-    zvalues: Incomplete | None = ...,
-    title: Incomplete | None = ...,
-    title_from_data: bool = ...,
+    values: Reference | str,
+    xvalues: Reference | str | None = None,
+    zvalues: Reference | str | None = None,
+    title: object = None,
+    title_from_data: bool = False,
 ): ...

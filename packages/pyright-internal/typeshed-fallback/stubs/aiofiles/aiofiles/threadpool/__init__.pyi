@@ -1,6 +1,5 @@
 from _typeshed import (
     FileDescriptorOrPath,
-    Incomplete,
     OpenBinaryMode,
     OpenBinaryModeReading,
     OpenBinaryModeUpdating,
@@ -9,8 +8,9 @@ from _typeshed import (
 )
 from asyncio import AbstractEventLoop
 from collections.abc import Callable
-from typing import overload
-from typing_extensions import Literal, TypeAlias
+from concurrent.futures import Executor
+from typing import Literal, overload
+from typing_extensions import TypeAlias
 
 from ..base import AiofilesContextManager
 from .binary import AsyncBufferedIOBase, AsyncBufferedReader, AsyncFileIO, AsyncIndirectBufferedIOBase, _UnknownAsyncBinaryIO
@@ -22,17 +22,17 @@ _Opener: TypeAlias = Callable[[str, int], int]
 @overload
 def open(
     file: FileDescriptorOrPath,
-    mode: OpenTextMode = ...,
-    buffering: int = ...,
-    encoding: str | None = ...,
-    errors: str | None = ...,
-    newline: str | None = ...,
-    closefd: bool = ...,
-    opener: _Opener | None = ...,
+    mode: OpenTextMode = "r",
+    buffering: int = -1,
+    encoding: str | None = None,
+    errors: str | None = None,
+    newline: str | None = None,
+    closefd: bool = True,
+    opener: _Opener | None = None,
     *,
-    loop: AbstractEventLoop | None = ...,
-    executor: Incomplete | None = ...,
-) -> AiofilesContextManager[None, None, AsyncTextIOWrapper]: ...
+    loop: AbstractEventLoop | None = None,
+    executor: Executor | None = None,
+) -> AiofilesContextManager[AsyncTextIOWrapper]: ...
 
 # Unbuffered binary: returns a FileIO
 @overload
@@ -40,63 +40,63 @@ def open(
     file: FileDescriptorOrPath,
     mode: OpenBinaryMode,
     buffering: Literal[0],
-    encoding: None = ...,
-    errors: None = ...,
-    newline: None = ...,
-    closefd: bool = ...,
-    opener: _Opener | None = ...,
+    encoding: None = None,
+    errors: None = None,
+    newline: None = None,
+    closefd: bool = True,
+    opener: _Opener | None = None,
     *,
-    loop: AbstractEventLoop | None = ...,
-    executor: Incomplete | None = ...,
-) -> AiofilesContextManager[None, None, AsyncFileIO]: ...
+    loop: AbstractEventLoop | None = None,
+    executor: Executor | None = None,
+) -> AiofilesContextManager[AsyncFileIO]: ...
 
 # Buffered binary reading/updating: AsyncBufferedReader
 @overload
 def open(
     file: FileDescriptorOrPath,
     mode: OpenBinaryModeReading | OpenBinaryModeUpdating,
-    buffering: Literal[-1, 1] = ...,
-    encoding: None = ...,
-    errors: None = ...,
-    newline: None = ...,
-    closefd: bool = ...,
-    opener: _Opener | None = ...,
+    buffering: Literal[-1, 1] = -1,
+    encoding: None = None,
+    errors: None = None,
+    newline: None = None,
+    closefd: bool = True,
+    opener: _Opener | None = None,
     *,
-    loop: AbstractEventLoop | None = ...,
-    executor: Incomplete | None = ...,
-) -> AiofilesContextManager[None, None, AsyncBufferedReader]: ...
+    loop: AbstractEventLoop | None = None,
+    executor: Executor | None = None,
+) -> AiofilesContextManager[AsyncBufferedReader]: ...
 
 # Buffered binary writing: AsyncBufferedIOBase
 @overload
 def open(
     file: FileDescriptorOrPath,
     mode: OpenBinaryModeWriting,
-    buffering: Literal[-1, 1] = ...,
-    encoding: None = ...,
-    errors: None = ...,
-    newline: None = ...,
-    closefd: bool = ...,
-    opener: _Opener | None = ...,
+    buffering: Literal[-1, 1] = -1,
+    encoding: None = None,
+    errors: None = None,
+    newline: None = None,
+    closefd: bool = True,
+    opener: _Opener | None = None,
     *,
-    loop: AbstractEventLoop | None = ...,
-    executor: Incomplete | None = ...,
-) -> AiofilesContextManager[None, None, AsyncBufferedIOBase]: ...
+    loop: AbstractEventLoop | None = None,
+    executor: Executor | None = None,
+) -> AiofilesContextManager[AsyncBufferedIOBase]: ...
 
 # Buffering cannot be determined: fall back to _UnknownAsyncBinaryIO
 @overload
 def open(
     file: FileDescriptorOrPath,
     mode: OpenBinaryMode,
-    buffering: int = ...,
-    encoding: None = ...,
-    errors: None = ...,
-    newline: None = ...,
-    closefd: bool = ...,
-    opener: _Opener | None = ...,
+    buffering: int = -1,
+    encoding: None = None,
+    errors: None = None,
+    newline: None = None,
+    closefd: bool = True,
+    opener: _Opener | None = None,
     *,
-    loop: AbstractEventLoop | None = ...,
-    executor: Incomplete | None = ...,
-) -> AiofilesContextManager[None, None, _UnknownAsyncBinaryIO]: ...
+    loop: AbstractEventLoop | None = None,
+    executor: Executor | None = None,
+) -> AiofilesContextManager[_UnknownAsyncBinaryIO]: ...
 
 stdin: AsyncTextIndirectIOWrapper
 stdout: AsyncTextIndirectIOWrapper
@@ -104,3 +104,5 @@ stderr: AsyncTextIndirectIOWrapper
 stdin_bytes: AsyncIndirectBufferedIOBase
 stdout_bytes: AsyncIndirectBufferedIOBase
 stderr_bytes: AsyncIndirectBufferedIOBase
+
+__all__ = ("open", "stdin", "stdout", "stderr", "stdin_bytes", "stdout_bytes", "stderr_bytes")

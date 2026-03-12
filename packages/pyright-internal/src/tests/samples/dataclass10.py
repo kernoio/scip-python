@@ -1,45 +1,44 @@
-# This sample tests the case where a dataclass entry is
-# initialized with a "field" that uses "init=False". This
-# case needs to be handled specially because it means
-# that the synthesized __init__ method shouldn't include
-# this field in its parameter list.
+# This sample verifies that a generic dataclass works.
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from typing import Generic, TypeVar, Union
 
-
-@dataclass
-class Parent:
-    prop_1: str = field(init=False)
-    prop_2: str = field(default="hello")
-    prop_3: str = field(default_factory=lambda: "hello")
-
-    # This should generate an error because it appears after
-    # a property with a default value.
-    prop_4: str = field()
-
-    def __post_init__(self):
-        self.prop_1 = "test"
+T = TypeVar("T")
 
 
 @dataclass
-class Child(Parent):
-    prop_2: str
+class ABase(Generic[T]):
+    value: Union[str, T]
 
 
-test = Child(prop_2="test", prop_4="hi")
+reveal_type(ABase(""), expected_text="ABase[Unknown]")
 
-assert test.prop_1 == "test"
-assert test.prop_2 == "test"
+
+class AChild(ABase[int]):
+    pass
+
+
+reveal_type(AChild(123), expected_text="AChild")
+
+
+class B(Generic[T]):
+    pass
 
 
 @dataclass
-class HandshakeMessage:
-    reset_reason_hex: str
-    reset_data_hex: str
-    device_id: str = field(default="")
-    reset_reason: str = field(init=False)
-    reset_data: str = field(init=False)
+class CBase(Generic[T]):
+    x: B[T] = B[T]()
 
-    def __post_init__(self):
-        reset_reason = "calculated value"
-        reset_data = "calculated value"
+
+@dataclass
+class CChild(CBase[T]):
+    pass
+
+
+c1 = CBase[int]()
+reveal_type(c1, expected_text="CBase[int]")
+reveal_type(c1.x, expected_text="B[int]")
+
+c2 = CChild[int]()
+reveal_type(c2, expected_text="CChild[int]")
+reveal_type(c2.x, expected_text="B[int]")

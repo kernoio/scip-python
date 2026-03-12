@@ -20,16 +20,31 @@ import {
 
 import {
     CancellationProvider,
+    CancelledTokenId,
     FileBasedToken,
     getCancellationFolderName,
     setCancellationFolderName,
 } from './cancellationUtils';
+import { Uri } from './uri/uri';
+import { UriEx } from './uri/uriUtils';
+
+class StatSyncFromFs {
+    statSync(uri: Uri) {
+        return fs.statSync(uri.getFilePath());
+    }
+}
 
 class OwningFileToken extends FileBasedToken {
     private _disposed = false;
 
-    constructor(cancellationFilePath: string) {
-        super(cancellationFilePath, fs);
+    constructor(cancellationId: string) {
+        super(cancellationId, new StatSyncFromFs());
+    }
+
+    override get isCancellationRequested(): boolean {
+        // Since this object owns the file and it gets created when the
+        // token is cancelled, there's no point in checking the pipe.
+        return this.isCancelled;
     }
 
     override cancel() {
@@ -37,12 +52,6 @@ class OwningFileToken extends FileBasedToken {
             this._createPipe();
             super.cancel();
         }
-    }
-
-    override get isCancellationRequested(): boolean {
-        // Since this object owns the file and it gets created when the
-        // token is cancelled, there's no point in checking the pipe.
-        return this.isCancelled;
     }
 
     override dispose(): void {
@@ -54,7 +63,7 @@ class OwningFileToken extends FileBasedToken {
 
     private _createPipe() {
         try {
-            fs.writeFileSync(this.cancellationFilePath, '', { flag: 'w' });
+            fs.writeFileSync(this.cancellationFilePath.getFilePath(), '', { flag: 'w' });
         } catch {
             // Ignore the exception.
         }
@@ -62,7 +71,7 @@ class OwningFileToken extends FileBasedToken {
 
     private _removePipe() {
         try {
-            fs.unlinkSync(this.cancellationFilePath);
+            fs.unlinkSync(this.cancellationFilePath.getFilePath());
         } catch {
             // Ignore the exception.
         }
@@ -71,14 +80,17 @@ class OwningFileToken extends FileBasedToken {
 
 class FileBasedCancellationTokenSource implements AbstractCancellationTokenSource {
     private _token: CancellationToken | undefined;
-    constructor(private _cancellationFilePath: string, private _ownFile: boolean = false) {}
+
+    constructor(private _cancellationId: string, private _ownFile: boolean = false) {
+        // Empty
+    }
 
     get token(): CancellationToken {
         if (!this._token) {
             // Be lazy and create the token only when actually needed.
             this._token = this._ownFile
-                ? new OwningFileToken(this._cancellationFilePath)
-                : new FileBasedToken(this._cancellationFilePath, fs);
+                ? new OwningFileToken(this._cancellationId)
+                : new FileBasedToken(this._cancellationId, new StatSyncFromFs());
         }
         return this._token;
     }
@@ -108,19 +120,22 @@ class FileBasedCancellationTokenSource implements AbstractCancellationTokenSourc
     }
 }
 
-function getCancellationFolderPath(folderName: string) {
+export function getCancellationFolderPath(folderName: string) {
     return path.join(os.tmpdir(), 'python-languageserver-cancellation', folderName);
 }
 
-function getCancellationFilePath(folderName: string, id: CancellationId) {
-    return path.join(getCancellationFolderPath(folderName), `cancellation-${String(id)}.tmp`);
+function getCancellationFileUri(folderName: string, id: CancellationId): string {
+    return UriEx.file(path.join(getCancellationFolderPath(folderName), `cancellation-${String(id)}.tmp`)).toString();
 }
 
-class FileCancellationReceiverStrategy implements CancellationReceiverStrategy {
+// See this issue for why the implements is commented out:
+// https://github.com/microsoft/vscode-languageserver-node/issues/1425
+class FileCancellationReceiverStrategy {
+    // implements IdCancellationReceiverStrategy {
     constructor(readonly folderName: string) {}
 
     createCancellationTokenSource(id: CancellationId): AbstractCancellationTokenSource {
-        return new FileBasedCancellationTokenSource(getCancellationFilePath(this.folderName, id));
+        return new FileBasedCancellationTokenSource(getCancellationFileUri(this.folderName, id));
     }
 }
 
@@ -169,7 +184,11 @@ export function getCancellationTokenFromId(cancellationId: string) {
         return CancellationToken.None;
     }
 
-    return new FileBasedToken(cancellationId, fs);
+    if (cancellationId === CancelledTokenId) {
+        return CancellationToken.Cancelled;
+    }
+
+    return new FileBasedToken(cancellationId, new StatSyncFromFs());
 }
 
 let cancellationSourceId = 0;
@@ -187,7 +206,7 @@ export class FileBasedCancellationProvider implements CancellationProvider {
         }
 
         return new FileBasedCancellationTokenSource(
-            getCancellationFilePath(folderName, `${this._prefix}-${String(cancellationSourceId++)}`),
+            getCancellationFileUri(folderName, `${this._prefix}-${String(cancellationSourceId++)}`),
             /* ownFile */ true
         );
     }

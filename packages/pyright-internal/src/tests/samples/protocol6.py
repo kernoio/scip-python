@@ -1,6 +1,6 @@
 # This sample tests nested protocol definitions.
 
-from typing import List, Literal, Protocol, TypeVar
+from typing import Literal, Protocol, TypeVar
 
 _T1 = TypeVar("_T1")
 _T2 = TypeVar("_T2")
@@ -9,7 +9,7 @@ _T3 = TypeVar("_T3")
 
 class Animal(Protocol[_T1]):
     species: str
-    attributes: List[_T1]
+    attributes: list[_T1]
 
 
 class Mammal(Animal[_T2], Protocol):
@@ -21,17 +21,17 @@ class Ungulate(Mammal[_T3], Protocol):
 
 
 class CamelLike(Ungulate[bytes], Protocol):
-    species: Literal["camel"]
+    species: Literal["camel"]  # pyright: ignore[reportIncompatibleVariableOverride]
 
 
 class Sloth:
     species: str
-    attributes: List[str]
+    attributes: list[str]
 
 
 class Armadillo:
     species: str
-    attributes: List[bytes]
+    attributes: list[bytes]
 
 
 class Tapir:
@@ -40,19 +40,19 @@ class Tapir:
 
 class Camel:
     species: Literal["camel"]
-    attributes: List[bytes]
+    attributes: list[bytes]
     type_of_hooves: bytes
 
 
 class Cow:
     species: str
-    attributes: List[str]
+    attributes: list[str]
     type_of_hooves: str
 
 
 a: Mammal[str] = Sloth()
 
-# This should generage an error because Armadillo
+# This should generate an error because Armadillo
 # uses bytes for its attributes, not str.
 b: Mammal[str] = Armadillo()
 
@@ -60,20 +60,25 @@ b: Mammal[str] = Armadillo()
 # doesn't provide an attributes.
 c: Mammal[str] = Tapir()
 
+# This should generate an error because "species"
+# is incompatible.
 d: Ungulate[bytes] = Camel()
+
 e: Ungulate[str] = Cow()
 f: CamelLike = Camel()
-
 
 
 class CallTreeProto(Protocol):
     subcalls: list["CallTreeProto"]
 
+
 class MyCallTree:
     subcalls: list["MyCallTree"]
-    
+
+
 class OtherCallTree:
     subcalls: list["CallTreeProto"]
+
 
 # This should generate an error.
 x1: CallTreeProto = MyCallTree()

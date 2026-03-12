@@ -1,11 +1,10 @@
 import { ConfigOptions } from 'pyright-internal/common/configOptions';
 import { FileSystem } from 'pyright-internal/common/fileSystem';
-import { combinePaths, FileSpec, getFileSystemEntries, tryRealpath, tryStat } from 'pyright-internal/common/pathUtils';
+import { FileSpec, getFileSystemEntries, tryRealpath, tryStat } from 'pyright-internal/common/uri/uriUtils';
+import { Uri } from 'pyright-internal/common/uri/uri';
 
 const _includeFileRegex = /\.pyi?$/;
 
-// FileMatcher is a (mostly) copy & paste from the resolve that can be found in `analyzer.ts`
-//  I couldn't find anywhere that this was extracted to (perhaps later we can do that, but for now this works just fine)
 export class FileMatcher {
     private _console: any;
 
@@ -20,12 +19,10 @@ export class FileMatcher {
         const longOperationLimitInSec = 10;
         let loggedLongOperationError = false;
 
-        const visitDirectoryUnchecked = (absolutePath: string, includeRegExp: RegExp) => {
+        const visitDirectoryUnchecked = (dirUri: Uri, includeRegExp: RegExp) => {
             if (!loggedLongOperationError) {
                 const secondsSinceStart = (Date.now() - startTime) * 0.001;
 
-                // If this is taking a long time, log an error to help the user
-                // diagnose and mitigate the problem.
                 if (secondsSinceStart >= longOperationLimitInSec) {
                     this._console.error(
                         `Enumeration of workspace source files is taking longer than ${longOperationLimitInSec} seconds.\n` +
@@ -44,61 +41,59 @@ export class FileMatcher {
             }
 
             if (this._configOptions.autoExcludeVenv) {
-                if (envMarkers.some((f) => this._fs.existsSync(combinePaths(absolutePath, ...f)))) {
-                    this._console.info(`Auto-excluding ${absolutePath}`);
+                if (envMarkers.some((f) => this._fs.existsSync(dirUri.combinePaths(...f)))) {
+                    this._console.info(`Auto-excluding ${dirUri.getFilePath()}`);
                     return;
                 }
             }
 
-            const { files, directories } = getFileSystemEntries(this._fs, absolutePath);
+            const { files, directories } = getFileSystemEntries(this._fs, dirUri);
 
-            for (const file of files) {
-                const filePath = combinePaths(absolutePath, file);
-
-                if (this._matchIncludeFileSpec(includeRegExp, exclude, filePath)) {
-                    results.push(filePath);
+            for (const fileUri of files) {
+                if (this._matchIncludeFileSpec(includeRegExp, exclude, fileUri)) {
+                    results.push(fileUri.getFilePath());
                 }
             }
 
-            for (const directory of directories) {
-                const dirPath = combinePaths(absolutePath, directory);
-                if (includeRegExp.test(dirPath)) {
-                    if (!this._isInExcludePath(dirPath, exclude)) {
-                        visitDirectory(dirPath, includeRegExp);
+            for (const subDirUri of directories) {
+                if (subDirUri.matchesRegex(includeRegExp)) {
+                    if (!FileSpec.isInPath(subDirUri, exclude)) {
+                        visitDirectory(subDirUri, includeRegExp);
                     }
                 }
             }
         };
 
         const seenDirs = new Set<string>();
-        const visitDirectory = (absolutePath: string, includeRegExp: RegExp) => {
-            const realDirPath = tryRealpath(this._fs, absolutePath);
-            if (!realDirPath) {
-                this._console.warn(`Skipping broken link "${absolutePath}"`);
+        const visitDirectory = (dirUri: Uri, includeRegExp: RegExp) => {
+            const realDirUri = tryRealpath(this._fs, dirUri);
+            if (!realDirUri) {
+                this._console.warn(`Skipping broken link "${dirUri.getFilePath()}"`);
                 return;
             }
 
+            const realDirPath = realDirUri.getFilePath();
             if (seenDirs.has(realDirPath)) {
-                this._console.warn(`Skipping recursive symlink "${absolutePath}" -> "${realDirPath}"`);
+                this._console.warn(`Skipping recursive symlink "${dirUri.getFilePath()}" -> "${realDirPath}"`);
                 return;
             }
             seenDirs.add(realDirPath);
 
             try {
-                visitDirectoryUnchecked(absolutePath, includeRegExp);
+                visitDirectoryUnchecked(dirUri, includeRegExp);
             } finally {
                 seenDirs.delete(realDirPath);
             }
         };
 
         include.forEach((includeSpec) => {
-            if (!this._isInExcludePath(includeSpec.wildcardRoot, exclude)) {
+            if (!FileSpec.isInPath(includeSpec.wildcardRoot, exclude)) {
                 let foundFileSpec = false;
 
                 const stat = tryStat(this._fs, includeSpec.wildcardRoot);
                 if (stat?.isFile()) {
                     if (this._shouldIncludeFile(includeSpec.wildcardRoot)) {
-                        results.push(includeSpec.wildcardRoot);
+                        results.push(includeSpec.wildcardRoot.getFilePath());
                         foundFileSpec = true;
                     }
                 } else if (stat?.isDirectory()) {
@@ -107,7 +102,7 @@ export class FileMatcher {
                 }
 
                 if (!foundFileSpec) {
-                    this._console.error(`File or directory "${includeSpec.wildcardRoot}" does not exist.`);
+                    this._console.error(`File or directory "${includeSpec.wildcardRoot.getFilePath()}" does not exist.`);
                 }
             }
         });
@@ -115,9 +110,9 @@ export class FileMatcher {
         return results;
     }
 
-    private _matchIncludeFileSpec(includeRegExp: RegExp, exclude: FileSpec[], filePath: string) {
-        if (includeRegExp.test(filePath)) {
-            if (!this._isInExcludePath(filePath, exclude) && this._shouldIncludeFile(filePath)) {
+    private _matchIncludeFileSpec(includeRegExp: RegExp, exclude: FileSpec[], fileUri: Uri) {
+        if (fileUri.matchesRegex(includeRegExp)) {
+            if (!FileSpec.isInPath(fileUri, exclude) && this._shouldIncludeFile(fileUri)) {
                 return true;
             }
         }
@@ -125,11 +120,7 @@ export class FileMatcher {
         return false;
     }
 
-    private _shouldIncludeFile(filePath: string) {
-        return _includeFileRegex.test(filePath);
-    }
-
-    private _isInExcludePath(path: string, excludePaths: FileSpec[]) {
-        return !!excludePaths.find((excl) => excl.regExp.test(path));
+    private _shouldIncludeFile(fileUri: Uri) {
+        return fileUri.matchesRegex(_includeFileRegex);
     }
 }

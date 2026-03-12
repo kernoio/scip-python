@@ -1,4 +1,4 @@
-/// <reference path="fourslash.ts" />
+/// <reference path="typings/fourslash.d.ts" />
 
 // @filename: typings/pkg1234/__init__.pyi
 //// __version__: str
@@ -10,5 +10,8 @@
 //// print(pkg1234.__version__)
 
 helper.verifyDiagnostics({
-    marker1: { category: 'warning', message: 'Import "pkg1234" could not be resolved from source' },
+    marker1: {
+        category: 'warning',
+        message: 'Import "pkg1234" could not be resolved from source',
+    },
 });

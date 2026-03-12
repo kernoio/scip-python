@@ -2,7 +2,11 @@
 # handle various class definition cases.
 
 
-from typing import Type
+from typing import Any, Self, TypeVar
+
+
+T = TypeVar("T")
+T2 = TypeVar("T2", bound=type[Any])
 
 
 class A:
@@ -10,7 +14,7 @@ class A:
 
 
 class B:
-    C: Type[A]
+    C: type[A]
 
 
 app = B()
@@ -20,7 +24,12 @@ class D(app.C):
     ...
 
 
-class E:
+class EMeta(type):
+    def __new__(mcls, *args: Any, **kwargs: Any):
+        ...
+
+
+class E(metaclass=EMeta):
     pass
 
 
@@ -28,9 +37,10 @@ class F(E):
     pass
 
 
-class G(E, metaclass=type):
-    def my_method(self):
-        print(__class__)
+class G[T](E, metaclass=type):
+    def my_method(self) -> "G":
+        reveal_type(__class__, expected_text="type[G[Unknown]]")
+        return __class__()
 
 
 # This should generate an error because only one metaclass is supported.
@@ -55,3 +65,24 @@ def func1(x: type) -> object:
         pass
 
     return Y()
+
+
+# This should generate an error because a TypeVar can't be used as a base class.
+class K(T):
+    pass
+
+
+class L(type[T]):
+    pass
+
+
+def func2(cls: type[T]):
+    class M(cls):
+        pass
+
+
+def func3(cls: T2) -> T2:
+    class M(cls):
+        pass
+    
+    return M

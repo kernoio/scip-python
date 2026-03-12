@@ -1,66 +1,52 @@
 from _typeshed import Incomplete
-from typing import Any
-from typing_extensions import Literal
+from typing import Literal
 
 unix_socket_available: bool
 
 class Server:
     ipc: bool
-    host: Any
-    port: Any
-    allowed_referral_hosts: Any
-    ssl: Any
-    tls: Any
-    name: Any
-    get_info: Any
-    dit_lock: Any
-    custom_formatter: Any
-    custom_validator: Any
-    current_address: Any
-    connect_timeout: Any
-    mode: Any
+    host: Incomplete
+    port: Incomplete
+    allowed_referral_hosts: Incomplete
+    ssl: Incomplete
+    tls: Incomplete
+    name: Incomplete
+    get_info: Incomplete
+    dit_lock: Incomplete
+    custom_formatter: Incomplete
+    custom_validator: Incomplete
+    current_address: Incomplete
+    connect_timeout: Incomplete
+    mode: Incomplete
     def __init__(
         self,
         host: str,
-        port: int | None = ...,
-        use_ssl: bool = ...,
-        allowed_referral_hosts: Incomplete | None = ...,
-        get_info: Literal["NO_INFO", "DSA", "SCHEMA", "ALL"] = ...,
-        tls: Incomplete | None = ...,
-        formatter: Incomplete | None = ...,
-        connect_timeout: Incomplete | None = ...,
-        mode: Literal["IP_SYSTEM_DEFAULT", "IP_V4_ONLY", "IP_V6_ONLY", "IP_V4_PREFERRED", "IP_V6_PREFERRED"] = ...,
-        validator: Incomplete | None = ...,
+        port: int | None = None,
+        use_ssl: bool = False,
+        allowed_referral_hosts=None,
+        get_info: Literal["NO_INFO", "DSA", "SCHEMA", "ALL"] = "SCHEMA",
+        tls=None,
+        formatter=None,
+        connect_timeout=None,
+        mode: Literal["IP_SYSTEM_DEFAULT", "IP_V4_ONLY", "IP_V6_ONLY", "IP_V4_PREFERRED", "IP_V6_PREFERRED"] = "IP_V6_PREFERRED",
+        validator=None,
     ) -> None: ...
     @property
     def address_info(self): ...
     def update_availability(self, address, available) -> None: ...
     def reset_availability(self) -> None: ...
-    def check_availability(
-        self,
-        source_address: Incomplete | None = ...,
-        source_port: Incomplete | None = ...,
-        source_port_list: Incomplete | None = ...,
-    ): ...
+    def check_availability(self, source_address=None, source_port=None, source_port_list=None): ...
     @staticmethod
     def next_message_id(): ...
     def get_info_from_server(self, connection) -> None: ...
-    def attach_dsa_info(self, dsa_info: Incomplete | None = ...) -> None: ...
-    def attach_schema_info(self, dsa_schema: Incomplete | None = ...) -> None: ...
+    def attach_dsa_info(self, dsa_info=None) -> None: ...
+    def attach_schema_info(self, dsa_schema=None) -> None: ...
     @property
     def info(self): ...
     @property
     def schema(self): ...
     @staticmethod
-    def from_definition(
-        host,
-        dsa_info,
-        dsa_schema,
-        port: Incomplete | None = ...,
-        use_ssl: bool = ...,
-        formatter: Incomplete | None = ...,
-        validator: Incomplete | None = ...,
-    ): ...
+    def from_definition(host, dsa_info, dsa_schema, port=None, use_ssl: bool = False, formatter=None, validator=None): ...
     def candidate_addresses(self): ...
     def has_control(self, control): ...
     def has_extension(self, extension): ...

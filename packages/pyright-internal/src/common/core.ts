@@ -6,8 +6,6 @@
  * Various helpers that don't have a dependency on other code files.
  */
 
-import { TextRange } from './textRange';
-
 export const enum Comparison {
     LessThan = -1,
     EqualTo = 0,
@@ -49,8 +47,6 @@ export function equateValues<T>(a: T, b: T) {
     return a === b;
 }
 
-export type GetCanonicalFileName = (fileName: string) => string;
-
 export function compareComparableValues(a: string | undefined, b: string | undefined): Comparison;
 export function compareComparableValues(a: number | undefined, b: number | undefined): Comparison;
 export function compareComparableValues(a: string | number | undefined, b: string | number | undefined) {
@@ -76,7 +72,7 @@ export function compareValues(a: number | undefined, b: number | undefined): Com
 /**
  * Tests whether a value is an array.
  */
-export function isArray(value: any): value is readonly {}[] {
+export function isArray<T extends any[]>(value: any): value is T {
     return Array.isArray ? Array.isArray(value) : value instanceof Array;
 }
 
@@ -102,8 +98,11 @@ const hasOwnProperty = Object.prototype.hasOwnProperty;
  * The `in` and `for-in` operators can *not* be safely used,
  * since `Object.prototype` may be modified by outside code.
  */
-export interface MapLike<T> {
-    [index: string]: T;
+export interface MapLike<K, V> {
+    readonly [Symbol.toStringTag]: string;
+    get(key: K): V | undefined;
+    has(key: K): boolean;
+    set(key: K, value: V): this;
 }
 
 /**
@@ -112,7 +111,7 @@ export interface MapLike<T> {
  * @param map A map-like.
  * @param key A property key.
  */
-export function hasProperty(map: MapLike<any>, key: string): boolean {
+export function hasProperty(map: { [index: string]: any }, key: string): boolean {
     return hasOwnProperty.call(map, key);
 }
 
@@ -176,10 +175,47 @@ export function getEnumNames<T>(enumType: T) {
     return result;
 }
 
-export function containsOnlyWhitespace(text: string, span?: TextRange) {
-    if (span) {
-        text = text.substring(span.start, TextRange.getEnd(span));
+export function containsOnlyWhitespace(text: string, start?: number, end?: number) {
+    if (start !== undefined) {
+        text = text.substring(start, end);
     }
 
     return /^\s*$/.test(text);
+}
+
+export function cloneStr(str: string): string {
+    // Ensure we get a copy of the string that is not shared with the original string.
+    // Node.js has an internal optimization where it uses sliced strings for `substring`, `slice`, `substr`
+    // when it deems appropriate. Most of the time, this optimization is beneficial, but in this case, we want
+    // to ensure we get a copy of the string to prevent the original string from being retained in memory.
+    // For example, the import resolution cache in importResolver might hold onto the full original file content
+    // because seemingly innocent the import name  (e.g., `foo` in `import foo`) is in the cache.
+
+    // V8 uses a SlicedString representation for substrings only above a small length threshold (currently 13),
+    // so short strings can be returned as-is without retaining the original text in memory.
+    // https://github.com/v8/v8/blob/02558d5a88c8f06ff064e3b6b332f342e1ab6143/src/objects/string.h#L1054
+    if (str.length < 13) {
+        return str;
+    }
+
+    return Buffer.from(str, 'utf8').toString('utf8');
+}
+
+export namespace Disposable {
+    export function is(value: any): value is { dispose(): void } {
+        return value && typeof value.dispose === 'function';
+    }
+}
+
+export function isMap(obj: unknown): obj is Map<unknown, unknown> {
+    return typeof obj === 'object' && obj !== null && obj.constructor === Map;
+}
+
+export function isPromise(obj: unknown): obj is Promise<unknown> {
+    return (
+        typeof obj === 'object' &&
+        obj !== null &&
+        typeof (obj as any).then === 'function' &&
+        typeof (obj as any).catch === 'function'
+    );
 }

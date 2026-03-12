@@ -3,14 +3,14 @@
 # within the type evaluator.
 
 from typing import TypeVar, Callable
-from typing_extensions import ParamSpec
+from typing_extensions import ParamSpec  # pyright: ignore[reportMissingModuleSource]
 
 P = ParamSpec("P")
-T = TypeVar("T")
+R = TypeVar("R")
 
 
-def test(x: Callable[P, T]) -> Callable[P, T]:
+def func1(x: Callable[P, R]) -> Callable[P, R]:
     return x
 
 
-test(test)
+func1(func1)

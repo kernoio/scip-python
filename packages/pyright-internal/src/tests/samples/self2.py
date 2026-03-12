@@ -1,9 +1,9 @@
 # This sample tests the usage of the Self type.
 
-from typing import Callable, Dict, Generic, ParamSpec, Protocol, Type, TypeVar
-from typing_extensions import Self
 from dataclasses import dataclass
+from typing import Callable, Generic, ParamSpec, Protocol, TypeVar
 
+from typing_extensions import Self  # pyright: ignore[reportMissingModuleSource]
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -22,11 +22,11 @@ class A(Generic[_P, _R]):
         return self
 
     @classmethod
-    def method3(cls: Type[Self]) -> Type[Self]:
+    def method3(cls: type[Self]) -> type[Self]:
         return cls
 
     @classmethod
-    def method4(cls) -> Type[Self]:
+    def method4(cls) -> type[Self]:
         return cls
 
 
@@ -44,12 +44,11 @@ class Shape1:
         return self
 
     @classmethod
-    def from_config(cls, config: Dict[str, float]) -> Self:
+    def from_config(cls, config: dict[str, float]) -> Self:
         return cls()
 
 
-class Circle1(Shape1):
-    ...
+class Circle1(Shape1): ...
 
 
 x1 = Shape1().set_scale(3.4)
@@ -65,18 +64,15 @@ class Shape2:
         return self
 
     @classmethod
-    def from_config(cls: Type[Self], config: Dict[str, float]) -> Self:
+    def from_config(cls: type[Self], config: dict[str, float]) -> Self:
         return cls()
 
-    def difference(self: Self, other: Self) -> float:
-        ...
+    def difference(self: Self, other: Self) -> float: ...
 
-    def apply(self: Self, f: Callable[[Self], None]) -> None:
-        ...
+    def apply(self: Self, f: Callable[[Self], None]) -> None: ...
 
 
-class Circle2(Shape2):
-    ...
+class Circle2(Shape2): ...
 
 
 s2 = Shape2()
@@ -123,8 +119,7 @@ if xs.next is not None:
 class Container(Generic[_T]):
     value: _T
 
-    def set_value(self, value: _T) -> Self:
-        ...
+    def set_value(self, value: _T) -> Self: ...
 
 
 def object_with_concrete_type(
@@ -139,8 +134,7 @@ def object_with_generic_type(container: Container[_T], value: _T) -> Container[_
 
 
 class ShapeProtocol(Protocol):
-    def set_scale(self, scale: float) -> Self:
-        ...
+    def set_scale(self, scale: float) -> Self: ...
 
 
 class ReturnSelf:
@@ -154,7 +148,7 @@ class ReturnSelf:
 class ReturnConcreteShape:
     scale: float = 1.0
 
-    def set_scale(self, scale: float) -> "ReturnConcreteShape":
+    def set_scale(self, scale: float) -> Self:
         self.scale = scale
         return self
 
@@ -193,3 +187,10 @@ def main(
 
     # This should generate an error.
     accepts_shape(return_different_class)
+
+
+class StateManager:
+    def __init__(self) -> None:
+        self.state: list[Self] = self.get_state()
+
+    def get_state(self) -> list[Self]: ...

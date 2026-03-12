@@ -7,6 +7,7 @@
  * Interface that describes the output of the import resolver.
  */
 
+import { Uri } from '../common/uri/uri';
 import { PyTypedInfo } from './pyTypedUtils';
 
 export const enum ImportType {
@@ -19,7 +20,7 @@ export interface ImplicitImport {
     isStubFile: boolean;
     isNativeLib: boolean;
     name: string;
-    path: string;
+    uri: Uri;
     pyTypedInfo?: PyTypedInfo | undefined;
 }
 
@@ -39,7 +40,10 @@ export interface ImportResult {
     isPartlyResolved: boolean;
 
     // True if the import refers to a namespace package (a
-    // folder without an __init__.py(i) file at every level).
+    // folder without an __init__.py(i) file at the last level).
+    // To determine if any intermediate level is a namespace
+    // package, look at the resolvedPaths array. Namespace package
+    // entries will have an empty string for the resolvedPath.
     isNamespacePackage: boolean;
 
     // True if there is an __init__.py(i) file in the final
@@ -59,11 +63,11 @@ export interface ImportResult {
     // The resolved absolute paths for each of the files in the module name.
     // Parts that have no files (e.g. directories within a namespace
     // package) have empty strings for a resolvedPath.
-    resolvedPaths: string[];
+    resolvedUris: Uri[];
 
     // For absolute imports, the search path that was used to resolve
     // (or partially resolve) the module.
-    searchPath?: string;
+    searchPath?: Uri;
 
     // True if resolved file is a type hint (.pyi) file rather than
     // a python (.py) file.
@@ -84,12 +88,12 @@ export interface ImportResult {
     // List of files within the final resolved path that are implicitly
     // imported as part of the package - used for both traditional and
     // namespace packages.
-    implicitImports: ImplicitImport[];
+    implicitImports?: Map<string, ImplicitImport>;
 
     // Implicit imports that have been filtered to include only
     // those symbols that are explicitly imported in a "from x import y"
     // statement.
-    filteredImplicitImports: ImplicitImport[];
+    filteredImplicitImports?: Map<string, ImplicitImport>;
 
     // If resolved from a type hint (.pyi), then store the import result
     // from .py here.
@@ -100,5 +104,5 @@ export interface ImportResult {
     pyTypedInfo?: PyTypedInfo | undefined;
 
     // The directory of the package, if found.
-    packageDirectory?: string | undefined;
+    packageDirectory?: Uri | undefined;
 }

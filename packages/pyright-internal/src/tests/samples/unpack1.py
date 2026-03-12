@@ -3,21 +3,18 @@
 # pyright: strictListInference=true
 
 
-class Foo:
-    ...
+class Class1: ...
 
 
-class Bar:
-    ...
+class Class2: ...
 
 
-a = [1, "hello", 3.4, Foo()]
+a = [1, "hello", 3.4, Class1()]
 
 b = [*a]
 
 
-def int_only(a: int):
-    ...
+def int_only(a: int): ...
 
 
 for c in b:
@@ -26,7 +23,7 @@ for c in b:
         # be an int or foo.
         int_only(c)
 
-        if not isinstance(c, Foo):
+        if not isinstance(c, Class1):
             # This should not generate an error.
             int_only(c)
 

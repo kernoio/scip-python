@@ -1,7 +1,8 @@
 import sys
 from abc import abstractmethod
 from collections.abc import Callable, Sequence
-from typing_extensions import Literal
+from typing import Literal
+from typing_extensions import deprecated
 
 __all__ = ["Error", "open", "open_new", "open_new_tab", "get", "register"]
 
@@ -43,8 +44,12 @@ class UnixBrowser(BaseBrowser):
 
 class Mozilla(UnixBrowser): ...
 
-class Galeon(UnixBrowser):
-    raise_opts: list[str]
+if sys.version_info < (3, 12):
+    class Galeon(UnixBrowser):
+        raise_opts: list[str]
+
+    class Grail(BaseBrowser):
+        def open(self, url: str, new: int = 0, autoraise: bool = True) -> bool: ...
 
 class Chrome(UnixBrowser): ...
 class Opera(UnixBrowser): ...
@@ -53,16 +58,22 @@ class Elinks(UnixBrowser): ...
 class Konqueror(BaseBrowser):
     def open(self, url: str, new: int = 0, autoraise: bool = True) -> bool: ...
 
-class Grail(BaseBrowser):
-    def open(self, url: str, new: int = 0, autoraise: bool = True) -> bool: ...
-
 if sys.platform == "win32":
     class WindowsDefault(BaseBrowser):
         def open(self, url: str, new: int = 0, autoraise: bool = True) -> bool: ...
 
 if sys.platform == "darwin":
-    class MacOSX(BaseBrowser):
-        def open(self, url: str, new: int = 0, autoraise: bool = True) -> bool: ...
+    if sys.version_info < (3, 13):
+        if sys.version_info >= (3, 11):
+            @deprecated("Deprecated since Python 3.11; removed in Python 3.13.")
+            class MacOSX(BaseBrowser):
+                def __init__(self, name: str) -> None: ...
+                def open(self, url: str, new: int = 0, autoraise: bool = True) -> bool: ...
+
+        else:
+            class MacOSX(BaseBrowser):
+                def __init__(self, name: str) -> None: ...
+                def open(self, url: str, new: int = 0, autoraise: bool = True) -> bool: ...
 
     class MacOSXOSAScript(BaseBrowser):  # In runtime this class does not have `name` and `basename`
         if sys.version_info >= (3, 11):

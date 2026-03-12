@@ -1,4 +1,4 @@
-/// <reference path="fourslash.ts" />
+/// <reference path="typings/fourslash.d.ts" />
 
 // @filename: testFunctionWithVariableStub.py
 //// import module1
@@ -21,7 +21,7 @@ await helper.verifyCompletion('included', 'markdown', {
             {
                 label: 'displayhook',
                 kind: Consts.CompletionItemKind.Variable,
-                documentation: '```python\ndisplayhook: () -> Unknown\n```',
+                documentation: '```python\ndef displayhook() -> Unknown\n```',
             },
         ],
     },

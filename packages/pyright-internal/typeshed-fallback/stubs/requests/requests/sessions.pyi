@@ -1,12 +1,10 @@
-from _typeshed import Incomplete, SupportsItems, SupportsRead, Unused
+from _typeshed import SupportsItems, SupportsRead, Unused
 from collections.abc import Callable, Iterable, Mapping, MutableMapping
-from typing import Any
-from typing_extensions import Self, TypeAlias, TypedDict
-
-from urllib3._collections import RecentlyUsedContainer
+from typing import Any, TypedDict, type_check_only
+from typing_extensions import Self, TypeAlias
 
 from . import adapters, auth as _auth, compat, cookies, exceptions, hooks, models, status_codes, utils
-from .models import Response
+from .models import _JSON, Response
 from .structures import CaseInsensitiveDict as CaseInsensitiveDict
 
 _BaseAdapter: TypeAlias = adapters.BaseAdapter
@@ -36,6 +34,7 @@ get_auth_from_url = utils.get_auth_from_url
 codes = status_codes.codes
 REDIRECT_STATI = models.REDIRECT_STATI
 
+def preferred_clock() -> float: ...
 def merge_setting(request_setting, session_setting, dict_class=...): ...
 def merge_hooks(request_hooks, session_hooks, dict_class=...): ...
 
@@ -44,12 +43,12 @@ class SessionRedirectMixin:
         self,
         resp,
         req,
-        stream: bool = ...,
-        timeout: Incomplete | None = ...,
-        verify: bool = ...,
-        cert: Incomplete | None = ...,
-        proxies: Incomplete | None = ...,
-        yield_requests: bool = ...,
+        stream: bool = False,
+        timeout=None,
+        verify: bool = True,
+        cert=None,
+        proxies=None,
+        yield_requests: bool = False,
         **adapter_kwargs,
     ): ...
     def rebuild_auth(self, prepared_request, response): ...
@@ -103,9 +102,10 @@ _Params: TypeAlias = (
 )
 _TextMapping: TypeAlias = MutableMapping[str, str]
 _HeadersUpdateMapping: TypeAlias = Mapping[str, str | bytes | None]
-_Timeout: TypeAlias = float | tuple[float, float] | tuple[float, None]
+_Timeout: TypeAlias = float | tuple[float | None, float | None]
 _Verify: TypeAlias = bool | str
 
+@type_check_only
 class _Settings(TypedDict):
     verify: _Verify | None
     proxies: _TextMapping
@@ -130,8 +130,7 @@ class Session(SessionRedirectMixin):
     max_redirects: int
     trust_env: bool
     cookies: RequestsCookieJar
-    adapters: MutableMapping[Any, Any]
-    redirect_cache: RecentlyUsedContainer[Any, Any]
+    adapters: MutableMapping[str, adapters.BaseAdapter]
     def __init__(self) -> None: ...
     def __enter__(self) -> Self: ...
     def __exit__(self, *args: Unused) -> None: ...
@@ -140,20 +139,20 @@ class Session(SessionRedirectMixin):
         self,
         method: str | bytes,
         url: str | bytes,
-        params: _Params | None = ...,
-        data: _Data | None = ...,
-        headers: _HeadersUpdateMapping | None = ...,
-        cookies: None | RequestsCookieJar | _TextMapping = ...,
-        files: _Files | None = ...,
-        auth: _Auth | None = ...,
-        timeout: _Timeout | None = ...,
-        allow_redirects: bool = ...,
-        proxies: _TextMapping | None = ...,
-        hooks: _HooksInput | None = ...,
-        stream: bool | None = ...,
-        verify: _Verify | None = ...,
-        cert: _Cert | None = ...,
-        json: Incomplete | None = ...,
+        params: _Params | None = None,
+        data: _Data | None = None,
+        headers: _HeadersUpdateMapping | None = None,
+        cookies: None | RequestsCookieJar | _TextMapping = None,
+        files: _Files | None = None,
+        auth: _Auth | None = None,
+        timeout: _Timeout | None = None,
+        allow_redirects: bool = True,
+        proxies: _TextMapping | None = None,
+        hooks: _HooksInput | None = None,
+        stream: bool | None = None,
+        verify: _Verify | None = None,
+        cert: _Cert | None = None,
+        json: _JSON | None = None,
     ) -> Response: ...
     def get(
         self,
@@ -172,7 +171,7 @@ class Session(SessionRedirectMixin):
         stream: bool | None = ...,
         verify: _Verify | None = ...,
         cert: _Cert | None = ...,
-        json: Incomplete | None = ...,
+        json: _JSON | None = None,
     ) -> Response: ...
     def options(
         self,
@@ -191,7 +190,7 @@ class Session(SessionRedirectMixin):
         stream: bool | None = ...,
         verify: _Verify | None = ...,
         cert: _Cert | None = ...,
-        json: Incomplete | None = ...,
+        json: _JSON | None = None,
     ) -> Response: ...
     def head(
         self,
@@ -210,13 +209,13 @@ class Session(SessionRedirectMixin):
         stream: bool | None = ...,
         verify: _Verify | None = ...,
         cert: _Cert | None = ...,
-        json: Incomplete | None = ...,
+        json: _JSON | None = None,
     ) -> Response: ...
     def post(
         self,
         url: str | bytes,
-        data: _Data | None = ...,
-        json: Incomplete | None = ...,
+        data: _Data | None = None,
+        json: _JSON | None = None,
         *,
         params: _Params | None = ...,
         headers: _HeadersUpdateMapping | None = ...,
@@ -234,7 +233,7 @@ class Session(SessionRedirectMixin):
     def put(
         self,
         url: str | bytes,
-        data: _Data | None = ...,
+        data: _Data | None = None,
         *,
         params: _Params | None = ...,
         headers: _HeadersUpdateMapping | None = ...,
@@ -248,12 +247,12 @@ class Session(SessionRedirectMixin):
         stream: bool | None = ...,
         verify: _Verify | None = ...,
         cert: _Cert | None = ...,
-        json: Incomplete | None = ...,
+        json: _JSON | None = None,
     ) -> Response: ...
     def patch(
         self,
         url: str | bytes,
-        data: _Data | None = ...,
+        data: _Data | None = None,
         *,
         params: _Params | None = ...,
         headers: _HeadersUpdateMapping | None = ...,
@@ -267,7 +266,7 @@ class Session(SessionRedirectMixin):
         stream: bool | None = ...,
         verify: _Verify | None = ...,
         cert: _Cert | None = ...,
-        json: Incomplete | None = ...,
+        json: _JSON | None = None,
     ) -> Response: ...
     def delete(
         self,
@@ -286,7 +285,7 @@ class Session(SessionRedirectMixin):
         stream: bool | None = ...,
         verify: _Verify | None = ...,
         cert: _Cert | None = ...,
-        json: Incomplete | None = ...,
+        json: _JSON | None = None,
     ) -> Response: ...
     def send(
         self,

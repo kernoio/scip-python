@@ -7,70 +7,72 @@
  */
 
 import assert = require('assert');
-import { convertDocStringToMarkdown, convertDocStringToPlainText } from '../analyzer/docStringConversion';
+import { PyrightDocStringService } from '../common/docStringService';
 
 // For substitution in the test data strings
 // Produces more readable test data than escaping the back ticks
 const singleTick = '`';
 const doubleTick = '``';
 const tripleTick = '```';
+const tripleTilda = '~~~';
 
-test('PlaintextIndention', () => {
-    const all: string[][] = [
-        ['A\nB', 'A\nB'],
-        ['A\n\nB', 'A\n\nB'],
-        ['A\n    B', 'A\nB'],
-        ['    A\n    B', 'A\nB'],
-        ['\nA\n    B', 'A\n    B'],
-        ['\n    A\n    B', 'A\nB'],
-        ['\nA\nB\n', 'A\nB'],
-        ['  \n\nA \n    \nB  \n    ', 'A\n\nB'],
-    ];
+export function docStringTests(docStringService = new PyrightDocStringService()) {
+    test('PlaintextIndention', () => {
+        const all: string[][] = [
+            ['A\nB', 'A\nB'],
+            ['A\n\nB', 'A\n\nB'],
+            ['A\n    B', 'A\nB'],
+            ['    A\n    B', 'A\nB'],
+            ['\nA\n    B', 'A\n    B'],
+            ['\n    A\n    B', 'A\nB'],
+            ['\nA\nB\n', 'A\nB'],
+            ['  \n\nA \n    \nB  \n    ', 'A\n\nB'],
+        ];
 
-    all.forEach((v) => _testConvertToPlainText(v[0], v[1]));
-});
+        all.forEach((v) => _testConvertToPlainText(v[0], v[1]));
+    });
 
-test('MarkdownIndention', () => {
-    const all: string[][] = [
-        ['A\nB', 'A\nB'],
-        ['A\n\nB', 'A\n\nB'],
-        ['A\n    B', 'A\nB'],
-        ['    A\n    B', 'A\nB'],
-        ['\nA\n    B', 'A  \n&nbsp;&nbsp;&nbsp;&nbsp;B'],
-        ['\n    A\n    B', 'A\nB'],
-        ['\nA\nB\n', 'A\nB'],
-        ['  \n\nA \n    \nB  \n    ', 'A\n\nB'],
-    ];
+    test('MarkdownIndention', () => {
+        const all: string[][] = [
+            ['A\nB', 'A\nB'],
+            ['A\n\nB', 'A\n\nB'],
+            ['A\n    B', 'A\nB'],
+            ['    A\n    B', 'A\nB'],
+            ['\nA\n    B', 'A  \n&nbsp;&nbsp;&nbsp;&nbsp;B'],
+            ['\n    A\n    B', 'A\nB'],
+            ['\nA\nB\n', 'A\nB'],
+            ['  \n\nA \n    \nB  \n    ', 'A\n\nB'],
+        ];
 
-    all.forEach((v) => _testConvertToMarkdown(v[0], v[1]));
-});
+        all.forEach((v) => _testConvertToMarkdown(v[0], v[1]));
+    });
 
-test('NormalText', () => {
-    const docstring = `This is just some normal text
+    test('NormalText', () => {
+        const docstring = `This is just some normal text
 that extends over multiple lines. This will appear
 as-is without modification.
 `;
 
-    const markdown = `This is just some normal text
+        const markdown = `This is just some normal text
 that extends over multiple lines. This will appear
 as-is without modification.
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('InlineLiterals', () => {
-    const docstring =
-        'This paragraph talks about ``foo``\n' +
-        'which is related to :something:`bar`, and probably `qux`:something_else:.\n';
+    test('InlineLiterals', () => {
+        const docstring =
+            'This paragraph talks about ``foo``\n' +
+            'which is related to :something:`bar`, and probably `qux`:something_else:.\n';
 
-    const markdown = 'This paragraph talks about `foo`\n' + 'which is related to `bar`, and probably `qux`.\n';
+        const markdown = 'This paragraph talks about `foo`  \n' + 'which is related to `bar`, and probably `qux`.\n';
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('Headings', () => {
-    const docstring = `Heading 1
+    test('Headings', () => {
+        const docstring = `Heading 1
 =========
 
 Heading 2
@@ -83,7 +85,7 @@ Heading 4
 +++++++++
 `;
 
-    const markdown = `Heading 1
+        const markdown = `Heading 1
 =========
 
 Heading 2
@@ -96,11 +98,11 @@ Heading 4
 ---------
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('AsterisksAtStartOfArgs', () => {
-    const docstring = `Foo:
+    test('AsterisksAtStartOfArgs', () => {
+        const docstring = `Foo:
 
     Args:
         foo (Foo): Foo!
@@ -108,7 +110,7 @@ test('AsterisksAtStartOfArgs', () => {
         **kwargs: These are named args.
 `;
 
-    const markdown = `Foo:
+        const markdown = `Foo:
 
 Args:  
 &nbsp;&nbsp;&nbsp;&nbsp;foo (Foo): Foo!  
@@ -116,27 +118,27 @@ Args:
 &nbsp;&nbsp;&nbsp;&nbsp;\\*\\*kwargs: These are named args.
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('CopyrightAndLicense', () => {
-    const docstring = `This is a test.
+    test('CopyrightAndLicense', () => {
+        const docstring = `This is a test.
 
 :copyright: Fake Name
 :license: ABCv123
 `;
 
-    const markdown = `This is a test.
+        const markdown = `This is a test.
 
 :copyright: Fake Name  
 :license: ABCv123
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('CommonRestFieldLists', () => {
-    const docstring = `This function does something.
+    test('CommonRestFieldLists', () => {
+        const docstring = `This function does something.
 
 :param foo: This is a description of the foo parameter
     which does something interesting.
@@ -148,7 +150,7 @@ test('CommonRestFieldLists', () => {
 :raises ValueError: If something goes wrong.
 `;
 
-    const markdown = `This function does something.
+        const markdown = `This function does something.
 
 :param foo: This is a description of the foo parameter  
 &nbsp;&nbsp;&nbsp;&nbsp;which does something interesting.  
@@ -160,17 +162,17 @@ test('CommonRestFieldLists', () => {
 :raises ValueError: If something goes wrong.
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('Doctest', () => {
-    const docstring = `This is a doctest:
+    test('Doctest', () => {
+        const docstring = `This is a doctest:
 
 >>> print('foo')
 foo
 `;
 
-    const markdown = `This is a doctest:
+        const markdown = `This is a doctest:
 
 ${tripleTick}
 >>> print('foo')
@@ -178,17 +180,17 @@ foo
 ${tripleTick}
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('DoctestIndented', () => {
-    const docstring = `This is a doctest:
+    test('DoctestIndented', () => {
+        const docstring = `This is a doctest:
 
     >>> print('foo')
     foo
 `;
 
-    const markdown = `This is a doctest:
+        const markdown = `This is a doctest:
 
 ${tripleTick}
 >>> print('foo')
@@ -196,11 +198,11 @@ foo
 ${tripleTick}
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('DoctestTextAfter', () => {
-    const docstring = `This is a doctest:
+    test('DoctestTextAfter', () => {
+        const docstring = `This is a doctest:
 
 >>> print('foo')
 foo
@@ -208,7 +210,7 @@ foo
 This text comes after.
 `;
 
-    const markdown = `This is a doctest:
+        const markdown = `This is a doctest:
 
 ${tripleTick}
 >>> print('foo')
@@ -218,18 +220,18 @@ ${tripleTick}
 This text comes after.
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('DoctestIndentedTextAfter', () => {
-    const docstring = `This is a doctest:
+    test('DoctestIndentedTextAfter', () => {
+        const docstring = `This is a doctest:
 
     >>> print('foo')
     foo
   This line has a different indent.
 `;
 
-    const markdown = `This is a doctest:
+        const markdown = `This is a doctest:
 
 ${tripleTick}
 >>> print('foo')
@@ -239,23 +241,11 @@ ${tripleTick}
 This line has a different indent.
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('MarkdownStyleBacktickBlock', () => {
-    const docstring = `Backtick block:
-
-${tripleTick}
-print(foo_bar)
-
-if True:
-    print(bar_foo)
-${tripleTick}
-
-And some text after.
-`;
-
-    const markdown = `Backtick block:
+    test('MarkdownStyleBacktickBlock', () => {
+        const docstring = `Backtick block:
 
 ${tripleTick}
 print(foo_bar)
@@ -267,11 +257,51 @@ ${tripleTick}
 And some text after.
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        const markdown = `Backtick block:
 
-test('RestLiteralBlock', () => {
-    const docstring = `
+${tripleTick}
+print(foo_bar)
+
+if True:
+    print(bar_foo)
+${tripleTick}
+
+And some text after.
+`;
+
+        _testConvertToMarkdown(docstring, markdown);
+    });
+
+    test('MarkdownStyleTildaBlock', () => {
+        const docstring = `Backtick block:
+
+${tripleTilda}
+print(foo_bar)
+
+if True:
+    print(bar_foo)
+${tripleTilda}
+
+And some text after.
+`;
+
+        const markdown = `Backtick block:
+
+${tripleTilda}
+print(foo_bar)
+
+if True:
+    print(bar_foo)
+${tripleTilda}
+
+And some text after.
+`;
+
+        _testConvertToMarkdown(docstring, markdown);
+    });
+
+    test('RestLiteralBlock', () => {
+        const docstring = `
 Take a look at this code::
 
     if foo:
@@ -282,7 +312,7 @@ Take a look at this code::
 This text comes after.
 `;
 
-    const markdown = `Take a look at this code:
+        const markdown = `Take a look at this code:
 
 ${tripleTick}
     if foo:
@@ -294,11 +324,11 @@ ${tripleTick}
 This text comes after.
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('RestLiteralBlockEmptyDoubleColonLine', () => {
-    const docstring = `
+    test('RestLiteralBlockEmptyDoubleColonLine', () => {
+        const docstring = `
 ::
 
     if foo:
@@ -307,7 +337,7 @@ test('RestLiteralBlockEmptyDoubleColonLine', () => {
         print('not foo!')
 `;
 
-    const markdown = `${tripleTick}
+        const markdown = `${tripleTick}
     if foo:
         print(foo)
     else:
@@ -315,11 +345,11 @@ test('RestLiteralBlockEmptyDoubleColonLine', () => {
 ${tripleTick}
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('RestLiteralBlockExtraSpace', () => {
-    const docstring = `
+    test('RestLiteralBlockExtraSpace', () => {
+        const docstring = `
 Take a look at this code::
 
 
@@ -333,7 +363,7 @@ Take a look at this code::
 This text comes after.
 `;
 
-    const markdown = `Take a look at this code:
+        const markdown = `Take a look at this code:
 
 ${tripleTick}
     if foo:
@@ -345,11 +375,11 @@ ${tripleTick}
 This text comes after.
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('RestLiteralBlockNoIndentOneLiner', () => {
-    const docstring = `
+    test('RestLiteralBlockNoIndentOneLiner', () => {
+        const docstring = `
 The next code is a one-liner::
 
 print(a + foo + 123)
@@ -357,7 +387,7 @@ print(a + foo + 123)
 And now it's text.
 `;
 
-    const markdown = `The next code is a one-liner:
+        const markdown = `The next code is a one-liner:
 
 ${tripleTick}
 print(a + foo + 123)
@@ -366,11 +396,11 @@ ${tripleTick}
 And now it's text.
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('DirectiveRemoval', () => {
-    const docstring = `This is a test.
+    test('DirectiveRemoval', () => {
+        const docstring = `This is a test.
 
 .. ignoreme:: example
 
@@ -387,25 +417,25 @@ This text is in-between.
 This text comes after.
 `;
 
-    const markdown = `This is a test.
+        const markdown = `This is a test.
 
 This text is in-between.
 
 This text comes after.
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('ClassDirective', () => {
-    const docstring = `
+    test('ClassDirective', () => {
+        const docstring = `
 .. class:: FooBar()
     This is a description of ${doubleTick}FooBar${doubleTick}.
 
 ${doubleTick}FooBar${doubleTick} is interesting.
 `;
 
-    const markdown = `${tripleTick}
+        const markdown = `${tripleTick}
 FooBar()
 ${tripleTick}
 
@@ -414,64 +444,98 @@ This is a description of ${singleTick}FooBar${singleTick}.
 ${singleTick}FooBar${singleTick} is interesting.
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('UnfinishedBacktickBlock', () => {
-    const docstring = '```\nsomething\n';
+    test('CodeBlockDirective', () => {
+        const docstring = `Take a look at this 
+    .. code-block:: Python
 
-    const markdown = '```\nsomething\n```\n';
+    if foo:
+        print(foo)
+    else:
+        print('not foo!')
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+This text comes after.
+`;
 
-test('UnfinishedInlineLiteral', () => {
-    const docstring = '`oops\n';
+        const markdown = `Take a look at this
+${tripleTick}
 
-    const markdown = '`oops`';
+    if foo:
+        print(foo)
+    else:
+        print('not foo!')
+${tripleTick}
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+This text comes after.`;
 
-test('DashList', () => {
-    const docstring = `
+        _testConvertToMarkdown(docstring, markdown);
+    });
+
+    test('UnfinishedBacktickBlock', () => {
+        const docstring = '```\nsomething\n';
+
+        const markdown = '```\nsomething\n```\n';
+
+        _testConvertToMarkdown(docstring, markdown);
+    });
+
+    test('UnfinishedTildaBlock', () => {
+        const docstring = '~~~\nsomething\n';
+
+        const markdown = '~~~\nsomething\n~~~\n';
+
+        _testConvertToMarkdown(docstring, markdown);
+    });
+
+    test('UnfinishedInlineLiteral', () => {
+        const docstring = '`oops\n';
+
+        const markdown = '`oops`';
+
+        _testConvertToMarkdown(docstring, markdown);
+    });
+
+    test('DashList', () => {
+        const docstring = `
 This is a list:
   - Item 1
   - Item 2
 `;
 
-    const markdown = `This is a list:
+        const markdown = `This is a list:
   - Item 1
   - Item 2
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('AsteriskList', () => {
-    const docstring = `
+    test('AsteriskList', () => {
+        const docstring = `
 This is a list:
   * Item 1
   * Item 2
 `;
 
-    const markdown = `This is a list:
+        const markdown = `This is a list:
   * Item 1
   * Item 2
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('SquareBrackets', () => {
-    const docstring = 'Optional[List[str]]';
-    const markdown = 'Optional\\[List\\[str\\]\\]';
+    test('SquareBrackets', () => {
+        const docstring = 'Optional[List[str]]';
+        const markdown = 'Optional\\[List\\[str\\]\\]';
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('ListDashMultiline', () => {
-    const docstring = `Keyword Arguments:
+    test('ListDashMultiline', () => {
+        const docstring = `Keyword Arguments:
 
     - option_strings -- A list of command-line option strings which
         should be associated with this action.
@@ -479,18 +543,18 @@ test('ListDashMultiline', () => {
     - dest -- The name of the attribute to hold the created object(s)
 `;
 
-    const markdown = `Keyword Arguments:
+        const markdown = `Keyword Arguments:
 
 - option\\_strings -- A list of command-line option strings which
 should be associated with this action.
 
 - dest -- The name of the attribute to hold the created object(s)`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('HalfIndentOnLeadingDash', () => {
-    const docstring = `Dash List
+    test('HalfIndentOnLeadingDash', () => {
+        const docstring = `Dash List
 - foo
     - foo
 - bar
@@ -499,7 +563,7 @@ test('HalfIndentOnLeadingDash', () => {
     - aaa
     `;
 
-    const markdown = `Dash List
+        const markdown = `Dash List
 - foo
   - foo
 - bar
@@ -507,11 +571,11 @@ test('HalfIndentOnLeadingDash', () => {
 - qux
   - aaa`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('AsteriskMultilineList', () => {
-    const docstring = `
+    test('AsteriskMultilineList', () => {
+        const docstring = `
 This is a list:
     * this is a long, multi-line paragraph. It
       seems to go on and on.
@@ -520,7 +584,7 @@ This is a list:
       seems to go on and on.
 `;
 
-    const markdown = `This is a list:
+        const markdown = `This is a list:
   * this is a long, multi-line paragraph. It
 seems to go on and on.
 
@@ -528,27 +592,27 @@ seems to go on and on.
 seems to go on and on.
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('ListAsteriskAddLeadingSpace', () => {
-    const docstring = `Title
+    test('ListAsteriskAddLeadingSpace', () => {
+        const docstring = `Title
 * First line bullet, no leading space
   with second line.
 * Second line bullet, no leading space
   with second line.`;
 
-    const markdown = `Title
+        const markdown = `Title
  * First line bullet, no leading space
 with second line.
  * Second line bullet, no leading space
 with second line.`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('PandasReadCsvListIndent', () => {
-    const docstring = `Title
+    test('PandasReadCsvListIndent', () => {
+        const docstring = `Title
 keep_default_na : bool, default True
     Whether or not to include the default NaN values when parsing the data.
 
@@ -557,7 +621,7 @@ keep_default_na : bool, default True
 
 na_filter : bool, default True`;
 
-    const markdown = `Title  
+        const markdown = `Title  
 keep\\_default\\_na : bool, default True  
 &nbsp;&nbsp;&nbsp;&nbsp;Whether or not to include the default NaN values when parsing the data.
 
@@ -566,77 +630,139 @@ is appended to the default NaN values used for parsing.
 
 na\\_filter : bool, default True`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('FieldListEpyText', () => {
-    const docstring = `
+    test('FieldListEpyText', () => {
+        const docstring = `
     1. Epytext:
          @param param1: description`;
 
-    const markdown = `
+        const markdown = `
 1. Epytext:  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;@param param1: description`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('FieldListRest', () => {
-    const docstring = `
+    test('FieldListRest', () => {
+        const docstring = `
     2. reST:
          :param param1: description`;
 
-    const markdown = `
+        const markdown = `
 2. reST:  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;:param param1: description`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('FieldListGoogleV1', () => {
-    const docstring = `
+    test('FieldListGoogleV1', () => {
+        const docstring = `
     3. Google (variant 1):
          Args:
              param1: description`;
 
-    const markdown = `
+        const markdown = `
 3. Google (variant 1):  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Args:  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;param1: description`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('FieldListGoogleV2', () => {
-    const docstring = `
+    test('FieldListGoogleV2', () => {
+        const docstring = `
     4. Google (variant 2):
          Args:
-             param1 (type): description`;
+             param1 (type): description
+             param2 (type): description`;
 
-    const markdown = `
+        const markdown = `
 4. Google (variant 2):  
 &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;Args:  
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;param1 (type): description`;
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;param1 (type): description  
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;param2 (type): description`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('FieldListDontAddLineBreaksToHeaders', () => {
-    const docstring = `
+    test('Googlewithreturntypes', () => {
+        const docstring = `
+    Example function with types documented in the docstring.
+
+    \`PEP 484\`_ type annotations are supported. If attribute, parameter, and
+    return types are annotated according to \`PEP 484\`_, they do not need to be
+    included in the docstring:
+
+    Args:
+        param1 (int): The first parameter.
+        param2 (str): The second parameter.
+
+    Returns:
+        bool: The return value. True for success, False otherwise.
+
+    .. _PEP 484:
+        https://www.python.org/dev/peps/pep-0484/`;
+
+        const markdown = `
+Example function with types documented in the docstring.
+
+\`PEP 484\`\\_ type annotations are supported. If attribute, parameter, and
+return types are annotated according to \`PEP 484\`\\_, they do not need to be
+included in the docstring:
+
+Args:  
+&nbsp;&nbsp;&nbsp;&nbsp;param1 (int): The first parameter.  
+&nbsp;&nbsp;&nbsp;&nbsp;param2 (str): The second parameter.
+
+Returns:  
+&nbsp;&nbsp;&nbsp;&nbsp;bool: The return value. True for success, False otherwise.`;
+
+        _testConvertToMarkdown(docstring, markdown);
+    });
+
+    test('GoogleWithComplexTypes', () => {
+        const docstring = `
+    Example function with types documented in the docstring.
+
+    Args:
+        param1 (int|bool): The first parameter.
+        param2 (list[str] with others): The second parameter.
+
+    Returns:
+        bool: The return value. True for success, False otherwise.
+`;
+
+        const markdown = `
+Example function with types documented in the docstring.
+
+Args:  
+&nbsp;&nbsp;&nbsp;&nbsp;param1 (int|bool): The first parameter.  
+&nbsp;&nbsp;&nbsp;&nbsp;param2 (list\\[str\\] with others): The second parameter.
+
+Returns:  
+&nbsp;&nbsp;&nbsp;&nbsp;bool: The return value. True for success, False otherwise.`;
+
+        _testConvertToMarkdown(docstring, markdown);
+    });
+
+    test('FieldListDontAddLineBreaksToHeaders', () => {
+        const docstring = `
     Parameters
     ----------
     ThisIsAFieldAfterAHeader : str`;
 
-    const markdown = `
+        const markdown = `
 Parameters
 ----------
 ThisIsAFieldAfterAHeader : str`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('EpyDocCv2Imread', () => {
-    const docstring = `imread(filename[, flags]) -> retval
+    test('EpyDocCv2Imread', () => {
+        const docstring = `imread(filename[, flags]) -> retval
 .   @brief Loads an image from a file.
 .   @anchor imread
 .   
@@ -648,7 +774,7 @@ test('EpyDocCv2Imread', () => {
 .   -   Windows bitmaps - \\*.bmp, \\*.dib (always supported)
 .   -   JPEG files - \\*.jpeg, \\*.jpg, \\*.jpe (see the *Note* section)`;
 
-    const markdown = `imread(filename\\[, flags\\]) -&gt; retval
+        const markdown = `imread(filename\\[, flags\\]) -&gt; retval
 
 @brief Loads an image from a file.
 
@@ -662,11 +788,11 @@ Currently, the following file formats are supported:
 -   Windows bitmaps - \\*.bmp, \\*.dib (always supported)
 -   JPEG files - \\*.jpeg, \\*.jpg, \\*.jpe (see the \\*Note\\* section)`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('Non EpyDocCv2Imread', () => {
-    const docstring = `imread(filename[, flags]) -> retval
+    test('Non EpyDocCv2Imread', () => {
+        const docstring = `imread(filename[, flags]) -> retval
   .   @brief Loads an image from a file.
   .   @anchor imread
   .   
@@ -678,7 +804,7 @@ test('Non EpyDocCv2Imread', () => {
   .   -   Windows bitmaps - \\*.bmp, \\*.dib (always supported)
   .   -   JPEG files - \\*.jpeg, \\*.jpg, \\*.jpe (see the *Note* section)`;
 
-    const markdown = `imread(filename\\[, flags\\]) -&gt; retval
+        const markdown = `imread(filename\\[, flags\\]) -&gt; retval
 .   @brief Loads an image from a file.
 .   @anchor imread
 .
@@ -690,11 +816,11 @@ test('Non EpyDocCv2Imread', () => {
 .   -   Windows bitmaps - \\*.bmp, \\*.dib (always supported)
 .   -   JPEG files - \\*.jpeg, \\*.jpg, \\*.jpe (see the \\*Note\\* section)`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('EpyDocTest', () => {
-    const docstring = `Return the x intercept of the line M{y=m*x+b}.  The X{x intercept}
+    test('EpyDocTest', () => {
+        const docstring = `Return the x intercept of the line M{y=m*x+b}.  The X{x intercept}
 of a line is the point at which it crosses the x axis (M{y=0}).
 
 This function can be used in conjuction with L{z_transform} to
@@ -708,7 +834,7 @@ find an arbitrary function's zeros.
 @rtype:   number
 @return:  the x intercept of the line M{y=m*x+b}.`;
 
-    const markdown = `Return the x intercept of the line M{y=m\\*x+b}.  The X{x intercept}
+        const markdown = `Return the x intercept of the line M{y=m\\*x+b}.  The X{x intercept}
 of a line is the point at which it crosses the x axis (M{y=0}).
 
 This function can be used in conjuction with L{z\\_transform} to
@@ -727,27 +853,27 @@ find an arbitrary function's zeros.
 
 @return:  the x intercept of the line M{y=m\\*x+b}.`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('DontEscapeHtmlTagsInsideCodeBlocks', () => {
-    const docstring = 'hello  `<code>`';
+    test('DontEscapeHtmlTagsInsideCodeBlocks', () => {
+        const docstring = 'hello  `<code>`';
 
-    const markdown = 'hello  `<code>`';
+        const markdown = 'hello  `<code>`';
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('EscapeHtmlTagsOutsideCodeBlocks', () => {
-    const docstring = 'hello  <noncode>';
+    test('EscapeHtmlTagsOutsideCodeBlocks', () => {
+        const docstring = 'hello  <noncode>';
 
-    const markdown = 'hello  &lt;noncode&gt;';
+        const markdown = 'hello  &lt;noncode&gt;';
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('IndentedCodeBlock', () => {
-    const docstring = `
+    test('IndentedCodeBlock', () => {
+        const docstring = `
 Expected:
     ${tripleTick}python
     def some_fn():
@@ -758,7 +884,7 @@ Expected:
     ${tripleTick}
 `;
 
-    const markdown = `
+        const markdown = `
 Expected:
 ${tripleTick}python
     def some_fn():
@@ -768,11 +894,78 @@ ${tripleTick}python
         """
 ${tripleTick}
 `;
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('RestTableWithHeader', () => {
-    const docstring = `
+    test('IndentedCodeBlockTilda', () => {
+        const docstring = `
+Expected:
+    ${tripleTilda}python
+    def some_fn():
+        """
+        Backticks on a different indentation level don't close the code block.
+        ${tripleTilda}
+        """
+    ${tripleTilda}
+`;
+
+        const markdown = `
+Expected:
+${tripleTilda}python
+    def some_fn():
+        """
+        Backticks on a different indentation level don't close the code block.
+        ${tripleTilda}
+        """
+${tripleTilda}
+`;
+        _testConvertToMarkdown(docstring, markdown);
+    });
+
+    test('MixedCodeBlockBacktick', () => {
+        const docstring = `
+Expected:
+    ${tripleTick}python
+    def some_fn():
+        """
+        Backticks on a different indentation level don't close the code block.
+        ${tripleTick}
+        """
+    ${tripleTick}
+Expected:
+    ${tripleTilda}python
+    def some_fn():
+        """
+        Backticks on a different indentation level don't close the code block.
+        ${tripleTick}
+        """
+    ${tripleTilda}
+`;
+
+        const markdown = `
+Expected:
+${tripleTick}python
+    def some_fn():
+        """
+        Backticks on a different indentation level don't close the code block.
+        ${tripleTick}
+        """
+${tripleTick}
+
+Expected:
+${tripleTilda}python
+    def some_fn():
+        """
+        Backticks on a different indentation level don't close the code block.
+        ${tripleTick}
+        """
+${tripleTilda}
+`;
+        _testConvertToMarkdown(docstring, markdown);
+    });
+
+    test('RestTableWithHeader', () => {
+        const docstring = `
 =============== =========================================================
 Generator
 --------------- ---------------------------------------------------------
@@ -780,7 +973,7 @@ Generator       Class implementing all of the random number distributions
 default_rng     Default constructor for \`\`Generator\`\`
 =============== =========================================================`;
 
-    const markdown = `
+        const markdown = `
 |Generator | |
 |---------------|---------------------------------------------------------|
 |Generator       |Class implementing all of the random number distributions|
@@ -788,11 +981,11 @@ default_rng     Default constructor for \`\`Generator\`\`
 
 <br/>`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('RestTablesMultilineHeader', () => {
-    const docstring = `
+    test('RestTablesMultilineHeader', () => {
+        const docstring = `
 ==================== =========================================================
 Compatibility
 functions - removed
@@ -801,18 +994,18 @@ in the new API
 rand                 Uniformly distributed values.
 ==================== =========================================================`;
 
-    const markdown = `
+        const markdown = `
 |Compatibility <br>functions - removed <br>in the new API | <br> <br> |
 |--------------------|---------------------------------------------------------|
 |rand                 |Uniformly distributed values.|
 
 <br/>`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('RestTableSimple', () => {
-    const docstring = `
+    test('RestTableSimple', () => {
+        const docstring = `
 ============================== =====================================
 Scalar Type                    Array Type
 ============================== =====================================
@@ -821,18 +1014,18 @@ Scalar Type                    Array Type
 ============================== =====================================
     `;
 
-    const markdown = `|Scalar Type                     |Array Type |
+        const markdown = `|Scalar Type                     |Array Type |
 |------------------------------|-------------------------------------|
 |:class:\`pandas.Interval\`       |:class:\`pandas.arrays.IntervalArray\`|
 |:class:\`pandas.Period\`         |:class:\`pandas.arrays.PeriodArray\`|
 
 <br/>`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-test('ReSTTableIndented', () => {
-    const docstring = `
+    test('ReSTTableIndented', () => {
+        const docstring = `
     data :
 
     dtype : str, np.dtype, or ExtensionDtype, optional
@@ -844,7 +1037,7 @@ test('ReSTTableIndented', () => {
         :class:\`pandas.Period\`       :class:\`pandas.arrays.PeriodArray\`
         ============================== =====================================`;
 
-    const markdown = `
+        const markdown = `
 data :
 
 dtype : str, np.dtype, or ExtensionDtype, optional
@@ -856,27 +1049,39 @@ dtype : str, np.dtype, or ExtensionDtype, optional
 
 <br/>`;
 
-    _testConvertToMarkdown(docstring, markdown);
-});
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-function _testConvertToMarkdown(docstring: string, expectedMarkdown: string) {
-    const actualMarkdown = convertDocStringToMarkdown(docstring);
+    test(`OddnumberOfColons`, () => {
+        const docstring = `
+    @param 'original:str' or 'original:list': original string to compare
+    @param 'new:str': the new string to compare
+    @return 'int': levenshtein difference
+    @return 'list': levenshtein difference if list
+    `;
+        const markdown = `@param 'original:str' or 'original:list': original string to compare\n\n@param 'new:str': the new string to compare\n\n@return 'int': levenshtein difference\n\n@return 'list': levenshtein difference if list`;
 
-    assert.equal(_normalizeLineEndings(actualMarkdown).trim(), _normalizeLineEndings(expectedMarkdown).trim());
-}
+        _testConvertToMarkdown(docstring, markdown);
+    });
 
-function _testConvertToPlainText(docstring: string, expectedPlainText: string) {
-    const actualMarkdown = convertDocStringToPlainText(docstring);
+    function _testConvertToMarkdown(docstring: string, expectedMarkdown: string) {
+        const actualMarkdown = docStringService.convertDocStringToMarkdown(docstring);
 
-    assert.equal(_normalizeLineEndings(actualMarkdown).trim(), _normalizeLineEndings(expectedPlainText).trim());
-}
+        assert.equal(_normalizeLineEndings(actualMarkdown).trim(), _normalizeLineEndings(expectedMarkdown).trim());
+    }
 
-function _normalizeLineEndings(text: string): string {
-    return text.split(/\r?\n/).join('\n');
-}
+    function _testConvertToPlainText(docstring: string, expectedPlainText: string) {
+        const actualMarkdown = docStringService.convertDocStringToPlainText(docstring);
 
-test('RPYCLiteralBlockTransition', () => {
-    const docstring = `
+        assert.equal(_normalizeLineEndings(actualMarkdown).trim(), _normalizeLineEndings(expectedPlainText).trim());
+    }
+
+    function _normalizeLineEndings(text: string): string {
+        return text.split(/\r?\n/).join('\n');
+    }
+
+    test('RPYCLiteralBlockTransition', () => {
+        const docstring = `
 ::
 
          #####    #####             ####
@@ -892,7 +1097,7 @@ test('RPYCLiteralBlockTransition', () => {
 Remote Python Call (RPyC)
 `;
 
-    const markdown = `
+        const markdown = `
 
 ${tripleTick}
          #####    #####             ####
@@ -909,5 +1114,10 @@ ${tripleTick}
 Remote Python Call (RPyC)
 `;
 
-    _testConvertToMarkdown(docstring, markdown);
+        _testConvertToMarkdown(docstring, markdown);
+    });
+}
+
+describe('Doc String Conversion', () => {
+    docStringTests();
 });

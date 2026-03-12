@@ -4,10 +4,10 @@
 
 # pyright: strict, reportUnusedVariable=false
 
-from typing import Optional, TypeVar
+from typing import Any, Literal, Protocol, Self, TypeVar
 
 
-def func1(x: Optional[int]):
+def func1(x: int | None):
     if x is not None:
         x.bit_length()
 
@@ -54,3 +54,62 @@ def func4(x: _T2) -> _T2:
     else:
         reveal_type(x, expected_text="_T2@func4")
         return x
+
+
+def func5(x: Any | None):
+    if x is None:
+        reveal_type(x, expected_text="None")
+    else:
+        reveal_type(x, expected_text="Any")
+
+
+def func6(x: Any | object | None):
+    if x is None:
+        reveal_type(x, expected_text="None")
+    else:
+        reveal_type(x, expected_text="Any | object")
+
+
+class NoneProto(Protocol):
+    def __bool__(self) -> Literal[False]: ...
+
+
+def func7(x: NoneProto | None):
+    if x is None:
+        reveal_type(x, expected_text="None")
+    else:
+        reveal_type(x, expected_text="NoneProto")
+
+
+_T3 = TypeVar("_T3", bound=None | int)
+
+
+def func8(x: _T3) -> _T3:
+    if x is None:
+        reveal_type(x, expected_text="None*")
+    else:
+        reveal_type(x, expected_text="int*")
+    return x
+
+
+_T4 = TypeVar("_T4")
+
+
+def func9(value: type[_T4] | None):
+    if value is None:
+        reveal_type(value, expected_text="None")
+    else:
+        reveal_type(value, expected_text="type[_T4@func9]")
+
+
+class A:
+    def __init__(self, parent: Self | None) -> None:
+        self.parent = parent
+
+    def get_depth(self) -> int:
+        current: Self | None = self
+        count = 0
+        while current is not None:
+            count += 1
+            current = current.parent
+        return count - 1

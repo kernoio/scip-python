@@ -1,8 +1,6 @@
-from _typeshed import Incomplete
-
 from .icalendar import VCalendar2_0
 
 class HCalendar(VCalendar2_0):
     name: str
     @classmethod
-    def serialize(cls, obj, buf: Incomplete | None = ..., lineLength: Incomplete | None = ..., validate: bool = ...): ...
+    def serialize(cls, obj, buf=None, lineLength=None, validate: bool = True): ...

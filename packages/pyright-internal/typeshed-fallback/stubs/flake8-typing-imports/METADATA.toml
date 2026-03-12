@@ -1,4 +1,2 @@
-version = "1.14.*"
-
-[tool.stubtest]
-ignore_missing_stub = true
+version = "1.17.*"
+upstream_repository = "https://github.com/asottile/flake8-typing-imports"

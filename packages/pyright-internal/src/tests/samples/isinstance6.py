@@ -1,19 +1,39 @@
-# This sample tests isinstance and issubclass type narrowing
-# based on cls and self parameters.
+# This sample tests the detection of a runtime checkable protocol
+# that unsafely overlaps a class within an isinstance or issubclass
+# call.
+
+# > Type checkers should reject an isinstance() or issubclass() call if there
+# > is an unsafe overlap between the type of the first argument and the protocol.
 
 
-class Foo:
-    @classmethod
-    def bar(cls, other: type):
-        if issubclass(other, cls):
-            reveal_type(other, expected_text="Type[Self@Foo]")
+from typing import Protocol, runtime_checkable
 
-        if issubclass(other, (int, cls)):
-            reveal_type(other, expected_text="Type[Self@Foo] | Type[int]")
 
-    def baz(self, other: object):
-        if isinstance(other, type(self)):
-            reveal_type(other, expected_text="Self@Foo")
+@runtime_checkable
+class Proto3(Protocol):
+    def method1(self, a: int) -> int: ...
 
-        if isinstance(other, (int, type(self))):
-            reveal_type(other, expected_text="Self@Foo | int")
+
+class Concrete3A:
+    def method1(self, a: str) -> None:
+        pass
+
+
+@runtime_checkable
+class Proto2(Protocol):
+    def other(self) -> None: ...
+
+
+class Concrete3B:
+    method1: int = 1
+
+
+def func3():
+    if isinstance(Concrete3A(), Proto3):  # Type error: unsafe overlap
+        pass
+
+    if isinstance(Concrete3B(), (Proto3, Proto2)):  # Type error: unsafe overlap
+        pass
+
+    if issubclass(Concrete3A, (Proto3, Proto2)):  # Type error: unsafe overlap
+        pass

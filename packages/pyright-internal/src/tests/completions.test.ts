@@ -8,8 +8,8 @@ import assert from 'assert';
 import { CancellationToken } from 'vscode-languageserver';
 import { CompletionItemKind, MarkupKind } from 'vscode-languageserver-types';
 
-import { ImportFormat } from '../languageService/autoImporter';
-import { CompletionOptions } from '../languageService/completionProvider';
+import { Uri } from '../common/uri/uri';
+import { CompletionOptions, CompletionProvider } from '../languageService/completionProvider';
 import { parseAndGetTestState } from './harness/fourslash/testState';
 
 test('completion import statement tooltip', async () => {
@@ -799,30 +799,26 @@ test('completion quote trigger', async () => {
     const state = parseAndGetTestState(code).state;
     const marker = state.getMarkerByName('marker');
     const filePath = marker.fileName;
+    const uri = Uri.file(filePath, state.serviceProvider);
     const position = state.convertOffsetToPosition(filePath, marker.position);
 
     const options: CompletionOptions = {
         format: 'markdown',
         snippet: false,
         lazyEdit: false,
-        autoImport: false,
-        extraCommitChars: false,
-        importFormat: ImportFormat.Absolute,
-        includeUserSymbolsInAutoImport: false,
         triggerCharacter: '"',
     };
 
-    const result = await state.workspace.service.getCompletionsForPosition(
-        filePath,
+    const result = new CompletionProvider(
+        state.program,
+        uri,
         position,
-        state.workspace.rootPath,
         options,
-        undefined,
         CancellationToken.None
-    );
+    ).getCompletions();
 
     assert(result);
-    const item = result.completionList.items.find((a) => a.label === '"USD"');
+    const item = result.items.find((a) => a.label === '"USD"');
     assert(item);
 });
 
@@ -841,29 +837,25 @@ test('completion quote trigger - middle', async () => {
     const state = parseAndGetTestState(code).state;
     const marker = state.getMarkerByName('marker');
     const filePath = marker.fileName;
+    const uri = Uri.file(filePath, state.serviceProvider);
     const position = state.convertOffsetToPosition(filePath, marker.position);
 
     const options: CompletionOptions = {
         format: 'markdown',
         snippet: false,
         lazyEdit: false,
-        autoImport: false,
-        extraCommitChars: false,
-        importFormat: ImportFormat.Absolute,
-        includeUserSymbolsInAutoImport: false,
         triggerCharacter: "'",
     };
 
-    const result = await state.workspace.service.getCompletionsForPosition(
-        filePath,
+    const result = new CompletionProvider(
+        state.program,
+        uri,
         position,
-        state.workspace.rootPath,
         options,
-        undefined,
         CancellationToken.None
-    );
+    ).getCompletions();
 
-    assert.strictEqual(result?.completionList.items.length, 0);
+    assert.strictEqual(result?.items.length, 0);
 });
 
 test('auto import sort text', async () => {
@@ -891,32 +883,781 @@ test('auto import sort text', async () => {
     while (state.workspace.service.test_program.analyze());
 
     const filePath = marker.fileName;
+    const uri = Uri.file(filePath, state.serviceProvider);
     const position = state.convertOffsetToPosition(filePath, marker.position);
 
     const options: CompletionOptions = {
         format: 'markdown',
         snippet: false,
         lazyEdit: false,
-        autoImport: true,
-        extraCommitChars: false,
-        importFormat: ImportFormat.Absolute,
-        includeUserSymbolsInAutoImport: true,
     };
 
-    const result = await state.workspace.service.getCompletionsForPosition(
-        filePath,
+    const result = new CompletionProvider(
+        state.program,
+        uri,
         position,
-        state.workspace.rootPath,
         options,
-        undefined,
         CancellationToken.None
-    );
+    ).getCompletions();
 
-    const items = result?.completionList.items.filter((i) => i.label === 'os');
+    const items = result?.items.filter((i) => i.label === 'os');
     assert.strictEqual(items?.length, 2);
 
     items.sort((a, b) => a.sortText!.localeCompare(b.sortText!));
 
     assert(!items[0].labelDetails);
     assert.strictEqual(items[1].labelDetails!.description, 'vendored');
+});
+
+test('completion MRU affects sort order', async () => {
+    type RecentCompletionInfo = {
+        label: string;
+        autoImportText: string;
+    };
+
+    const completionProviderTestAccess = CompletionProvider as unknown as {
+        mostRecentCompletions: RecentCompletionInfo[];
+    };
+
+    // Reset MRU list to keep the test deterministic.
+    completionProviderTestAccess.mostRecentCompletions = [];
+
+    const code = `
+// @filename: test.py
+//// true_divide = 0
+//// truly = 0
+//// tru/*marker*/
+    `;
+
+    const state = parseAndGetTestState(code).state;
+    const marker = state.getMarkerByName('marker');
+    state.openFiles(state.testData.files.map((f) => f.fileName));
+
+    while (state.workspace.service.test_program.analyze());
+
+    const filePath = marker.fileName;
+    const uri = Uri.file(filePath, state.serviceProvider);
+    const position = state.convertOffsetToPosition(filePath, marker.position);
+
+    const options: CompletionOptions = {
+        format: 'markdown',
+        snippet: false,
+        lazyEdit: false,
+    };
+
+    const provider1 = new CompletionProvider(state.program, uri, position, options, CancellationToken.None);
+    const result1 = provider1.getCompletions();
+    assert(result1);
+
+    const truly1 = result1.items.find((i) => i.label === 'truly');
+    const trueDivide1 = result1.items.find((i) => i.label === 'true_divide');
+    assert(truly1?.sortText);
+    assert(trueDivide1?.sortText);
+
+    // Not in MRU list yet: normal symbol category (09) and recent index (9999).
+    assert(truly1.sortText.startsWith('09.9999.'));
+    assert(trueDivide1.sortText.startsWith('09.9999.'));
+
+    provider1.resolveCompletionItem(truly1);
+
+    const provider2 = new CompletionProvider(state.program, uri, position, options, CancellationToken.None);
+    const result2 = provider2.getCompletions();
+    assert(result2);
+
+    const truly2 = result2.items.find((i) => i.label === 'truly');
+    const trueDivide2 = result2.items.find((i) => i.label === 'true_divide');
+    assert(truly2?.sortText);
+    assert(trueDivide2?.sortText);
+
+    // Now the selected item is in MRU: promoted to RecentKeywordOrSymbol category (05) with index (0000).
+    assert(truly2.sortText.startsWith('05.0000.'));
+    assert(trueDivide2.sortText.startsWith('09.9999.'));
+
+    // Reset MRU list so it doesn't affect other tests.
+    completionProviderTestAccess.mostRecentCompletions = [];
+});
+
+test('override generic', async () => {
+    const code = `
+// @filename: test.py
+//// from typing import Generic, TypeVar
+//// from typing_extensions import override
+//// 
+//// T = TypeVar('T')
+//// class A(Generic[T]):
+////     def foo(self, x: list[T]) -> T:
+////         return x
+////     
+//// class B(A[int]):
+////     @override
+////     def [|foo/*marker*/|]
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: 'foo',
+                    kind: CompletionItemKind.Method,
+                    textEdit: {
+                        range: state.getPositionRange('marker'),
+                        newText: 'foo(self, x: list[T]) -> T:\n    return super().foo(x)',
+                    },
+                },
+            ],
+        },
+    });
+});
+
+test('override generic nested', async () => {
+    const code = `
+// @filename: test.py
+//// from typing import Generic, TypeVar
+//// from typing_extensions import override
+//// 
+//// T = TypeVar('T')
+//// T2 = TypeVar('T2')
+//// class A(Generic[T, T2]):
+////     def foo(self, x: tuple[T, T2]) -> T:
+////         return x
+////     
+//// 
+//// T3 = TypeVar('T3')
+//// class B(A[int, T3]):
+////     @override
+////     def [|foo/*marker1*/|]
+////     
+//// class C(B[int]):
+////     @override
+////     def [|foo/*marker2*/|]
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker1']: {
+            completions: [
+                {
+                    label: 'foo',
+                    kind: CompletionItemKind.Method,
+                    textEdit: {
+                        range: state.getPositionRange('marker1'),
+                        newText: 'foo(self, x: tuple[T, T2]) -> T:\n    return super().foo(x)',
+                    },
+                },
+            ],
+        },
+        ['marker2']: {
+            completions: [
+                {
+                    label: 'foo',
+                    kind: CompletionItemKind.Method,
+                    textEdit: {
+                        range: state.getPositionRange('marker2'),
+                        newText: 'foo(self, x: tuple[T, T2]) -> T:\n    return super().foo(x)',
+                    },
+                },
+            ],
+        },
+    });
+});
+
+test('override __call__', async () => {
+    const code = `
+// @filename: test.py
+//// from argparse import Action
+//// 
+//// class MyAction(Action):
+////     def [|__call__/*marker*/|]
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: '__call__',
+                    kind: CompletionItemKind.Method,
+                    textEdit: {
+                        range: state.getPositionRange('marker'),
+                        newText:
+                            '__call__(self, parser: ArgumentParser, namespace: Namespace, values: str | Sequence[Any] | None, option_string: str | None = None) -> None:\n    return super().__call__(parser, namespace, values, option_string)',
+                    },
+                },
+            ],
+        },
+    });
+});
+
+test('override ParamSpec', async () => {
+    const code = `
+// @filename: test.py
+//// from typing import Callable, ParamSpec
+////
+//// P = ParamSpec("P")
+////
+//// class A:
+////     def foo(self, func: Callable[P, None], *args: P.args, **kwargs: P.kwargs):
+////         pass
+//// 
+//// class B(A):
+////     def [|foo/*marker*/|]
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: 'foo',
+                    kind: CompletionItemKind.Method,
+                    textEdit: {
+                        range: state.getPositionRange('marker'),
+                        newText:
+                            'foo(self, func: Callable[P, None], *args: P.args, **kwargs: P.kwargs):\n    return super().foo(func, *args, **kwargs)',
+                    },
+                },
+            ],
+        },
+    });
+});
+
+test('annotation using comment', async () => {
+    const code = `
+// @filename: test.py
+//// class A:
+////     def foo(self, a): # type: (int) -> None
+////         pass
+//// 
+//// class B(A):
+////     def [|foo/*marker*/|]
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: 'foo',
+                    kind: CompletionItemKind.Method,
+                    textEdit: {
+                        range: state.getPositionRange('marker'),
+                        newText: 'foo(self, a: int) -> None:\n    return super().foo(a)',
+                    },
+                },
+            ],
+        },
+    });
+});
+
+test('Complex type arguments', async () => {
+    const code = `
+// @filename: test.py
+//// from typing import Generic, TypeVar, Any, List, Dict, Tuple, Mapping, Union
+//// 
+//// T = TypeVar("T")
+//// 
+//// class A(Generic[T]):
+////     def foo(self, a: T) -> T:
+////         return a
+////
+//// class B(A[Union[Tuple[list, dict], tuple[Mapping[List[A[int]], Dict[str, Any]], float]]]):
+////     pass
+
+// @filename: test1.py
+//// from test import B
+//// 
+//// class U(B):
+////     def [|foo/*marker*/|]
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    state.openFiles(state.testData.files.map((f) => f.fileName));
+
+    await state.verifyCompletion('included', 'markdown', {
+        marker: {
+            completions: [
+                {
+                    label: 'foo',
+                    kind: CompletionItemKind.Method,
+                    textEdit: {
+                        range: state.getPositionRange('marker'),
+                        newText: 'foo(self, a: T) -> T:\n    return super().foo(a)',
+                    },
+                },
+            ],
+        },
+    });
+});
+
+test('Enum member', async () => {
+    const code = `
+// @filename: test.py
+//// from enum import Enum
+//// 
+//// class MyEnum(Enum):
+////     this = 1
+////     that = 2
+//// 
+//// print(MyEnum.[|/*marker*/|])
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: 'this',
+                    kind: CompletionItemKind.EnumMember,
+                    documentation: '```python\nthis: int\n```',
+                },
+            ],
+        },
+    });
+});
+
+test('no member of Enum member', async () => {
+    const code = `
+// @filename: test.py
+//// from enum import Enum
+//// 
+//// class MyEnum(Enum):
+////     this = 1
+////     that = 2
+//// 
+//// print(MyEnum.this.[|/*marker*/|])
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('excluded', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: 'this',
+                    kind: undefined,
+                },
+                {
+                    label: 'that',
+                    kind: undefined,
+                },
+            ],
+        },
+    });
+});
+
+test('default Enum member', async () => {
+    const code = `
+// @filename: test.py
+//// from enum import Enum
+//// 
+//// class MyEnum(Enum):
+////     MemberOne = []
+//// 
+//// MyEnum.MemberOne.[|/*marker*/|]
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: 'name',
+                    kind: CompletionItemKind.Property,
+                },
+                {
+                    label: 'value',
+                    kind: CompletionItemKind.Property,
+                },
+            ],
+        },
+    });
+});
+
+test('TypeDict literal values', async () => {
+    const code = `
+// @filename: test.py
+//// from typing import TypedDict, Literal
+//// 
+//// class DataA(TypedDict):
+////     name: Literal["a", "b"] | None
+//// 
+//// data_a: DataA = {
+////     "name": [|"/*marker*/"|]
+//// }
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: '"a"',
+                    kind: CompletionItemKind.Constant,
+                    textEdit: { range: state.getPositionRange('marker'), newText: '"a"' },
+                },
+                {
+                    label: '"b"',
+                    kind: CompletionItemKind.Constant,
+                    textEdit: { range: state.getPositionRange('marker'), newText: '"b"' },
+                },
+            ],
+        },
+    });
+});
+
+test('typed dict key constructor completion', async () => {
+    const code = `
+// @filename: test.py
+//// from typing import TypedDict
+//// 
+//// class Movie(TypedDict):
+////    key1: str
+//// 
+//// a = Movie(k[|"/*marker*/"|])
+//// 
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', MarkupKind.Markdown, {
+        marker: {
+            completions: [
+                {
+                    kind: CompletionItemKind.Variable,
+                    label: 'key1=',
+                },
+            ],
+        },
+    });
+});
+
+test('import from completion for namespace package', async () => {
+    const code = `
+// @filename: test.py
+//// from nest1 import [|/*marker*/|]
+
+// @filename: nest1/nest2/__init__.py
+//// # empty
+
+// @filename: nest1/module.py
+//// # empty
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: 'nest2',
+                    kind: CompletionItemKind.Module,
+                },
+                {
+                    label: 'module',
+                    kind: CompletionItemKind.Module,
+                },
+            ],
+        },
+    });
+});
+
+test('members off enum member', async () => {
+    const code = `
+// @filename: test.py
+//// from enum import Enum
+//// class Planet(Enum):
+////     MERCURY = (3.303e+23, 2.4397e6)
+////     EARTH   = (5.976e+24, 6.37814e6)
+////
+////     def __init__(self, mass, radius):
+////         self.mass = mass       # in kilograms
+////         self.radius = radius   # in meters
+////
+////     @property
+////     def surface_gravity(self):
+////         # universal gravitational constant  (m3 kg-1 s-2)
+////         G = 6.67300E-11
+////         return G * self.mass / (self.radius * self.radius)
+////
+//// Planet.EARTH.[|/*marker*/|]
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('excluded', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: 'MERCURY',
+                    kind: CompletionItemKind.EnumMember,
+                },
+                {
+                    label: 'EARTH',
+                    kind: CompletionItemKind.EnumMember,
+                },
+            ],
+        },
+    });
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: 'mass',
+                    kind: CompletionItemKind.Variable,
+                },
+                {
+                    label: 'radius',
+                    kind: CompletionItemKind.Variable,
+                },
+                {
+                    label: 'surface_gravity',
+                    kind: CompletionItemKind.Property,
+                },
+            ],
+        },
+    });
+});
+
+test('handle missing close paren case', async () => {
+    const code = `
+// @filename: test.py
+//// count=100
+//// while count <= (c[|/*marker*/|]
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: 'count',
+                    kind: CompletionItemKind.Variable,
+                },
+            ],
+        },
+    });
+});
+
+test('enum with regular base type', async () => {
+    const code = `
+// @filename: test.py
+//// from enum import Enum
+//// from datetime import timedelta
+//// class Period(timedelta, Enum):
+////     Today = -1
+////
+//// Period.Today.[|/*marker*/|]
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: 'days',
+                    kind: CompletionItemKind.Property,
+                },
+                {
+                    label: 'seconds',
+                    kind: CompletionItemKind.Property,
+                },
+            ],
+        },
+    });
+});
+
+test('import statements with implicit import', async () => {
+    const code = `
+// @filename: test.py
+//// from lib import /*marker*/
+
+// @filename: lib/__init__.py
+//// from . import api as api
+
+// @filename: lib/api.py
+//// # Empty
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        ['marker']: {
+            completions: [
+                {
+                    label: 'api',
+                    kind: CompletionItemKind.Module,
+                },
+            ],
+        },
+    });
+});
+
+test('overloaded Literal[...] suggestions in call arguments', async () => {
+    const code = `
+// @filename: test.py
+//// from typing import overload, Literal
+////
+//// @overload
+//// def example(p: Literal["A"]): ...
+//// @overload
+//// def example(p: Literal["B"]): ...
+//// @overload
+//// def example(p: Literal["C"]): ...
+//// def example(p):
+////     pass
+////
+//// example([|"/*marker*/"|])
+    `;
+
+    const state = parseAndGetTestState(code).state;
+    const marker = state.getMarkerByName('marker');
+    state.openFile(marker.fileName);
+
+    await state.verifyCompletion('included', 'markdown', {
+        marker: {
+            completions: [
+                {
+                    kind: CompletionItemKind.Constant,
+                    label: '"A"',
+                    textEdit: { range: state.getPositionRange('marker'), newText: '"A"' },
+                },
+                {
+                    kind: CompletionItemKind.Constant,
+                    label: '"B"',
+                    textEdit: { range: state.getPositionRange('marker'), newText: '"B"' },
+                },
+                {
+                    kind: CompletionItemKind.Constant,
+                    label: '"C"',
+                    textEdit: { range: state.getPositionRange('marker'), newText: '"C"' },
+                },
+            ],
+        },
+    });
+});
+
+test('nested TypedDict completion with Unpack - without other fields', async () => {
+    const code = `
+// @filename: test.py
+//// from typing import Unpack, TypedDict
+//// 
+//// class InnerDict(TypedDict):
+////     a: int
+////     b: str
+//// 
+//// class OuterDict(TypedDict):
+////     inner: InnerDict
+////     field_1: str
+//// 
+//// def test_inner_dict(**kwargs: Unpack[OuterDict]):
+////     pass
+//// 
+//// test_inner_dict(inner={[|/*marker*/|]})
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        marker: {
+            completions: [
+                {
+                    kind: CompletionItemKind.Constant,
+                    label: "'a'",
+                    textEdit: { range: state.getPositionRange('marker'), newText: "'a'" },
+                },
+                {
+                    kind: CompletionItemKind.Constant,
+                    label: "'b'",
+                    textEdit: { range: state.getPositionRange('marker'), newText: "'b'" },
+                },
+            ],
+        },
+    });
+});
+
+test('nested TypedDict completion with Unpack - with other fields', async () => {
+    const code = `
+// @filename: test.py
+//// from typing import Unpack, TypedDict
+//// 
+//// class InnerDict(TypedDict):
+////     a: int
+////     b: str
+//// 
+//// class OuterDict(TypedDict):
+////     inner: InnerDict
+////     field_1: str
+//// 
+//// def test_inner_dict(**kwargs: Unpack[OuterDict]):
+////     pass
+//// 
+//// test_inner_dict(field_1="test", inner={[|/*marker*/|]})
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        marker: {
+            completions: [
+                {
+                    kind: CompletionItemKind.Constant,
+                    label: '"a"',
+                    textEdit: { range: state.getPositionRange('marker'), newText: '"a"' },
+                },
+                {
+                    kind: CompletionItemKind.Constant,
+                    label: '"b"',
+                    textEdit: { range: state.getPositionRange('marker'), newText: '"b"' },
+                },
+            ],
+        },
+    });
+});
+
+test('simple nested TypedDict completion - no Unpack', async () => {
+    const code = `
+// @filename: test.py
+//// from typing import TypedDict
+//// 
+//// class InnerDict(TypedDict):
+////     a: int
+////     b: str
+//// 
+//// def test_func(inner: InnerDict):
+////     pass
+//// 
+//// test_func(inner={[|/*marker*/|]})
+    `;
+
+    const state = parseAndGetTestState(code).state;
+
+    await state.verifyCompletion('included', 'markdown', {
+        marker: {
+            completions: [
+                {
+                    kind: CompletionItemKind.Constant,
+                    label: "'a'",
+                    textEdit: { range: state.getPositionRange('marker'), newText: "'a'" },
+                },
+                {
+                    kind: CompletionItemKind.Constant,
+                    label: "'b'",
+                    textEdit: { range: state.getPositionRange('marker'), newText: "'b'" },
+                },
+            ],
+        },
+    });
 });

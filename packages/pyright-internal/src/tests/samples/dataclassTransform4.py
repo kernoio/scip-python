@@ -5,55 +5,40 @@ from typing import (
     Any,
     Callable,
     Literal,
-    Optional,
-    Tuple,
-    Type,
     TypeVar,
-    Union,
     overload,
 )
 
 T = TypeVar("T")
 
 
-class ModelField:
-    def __init__(
-        self,
-        *,
-        default: Optional[Any] = ...,
-        init: Optional[bool] = True,
-        **kwargs: Any,
-    ) -> None:
-        ...
-
-
 @overload
-def field(
+def field1(
     *,
-    default: Optional[str] = None,
+    default: str | None = None,
     resolver: Callable[[], Any],
     init: Literal[False] = False,
-) -> Any:
-    ...
+) -> Any: ...
 
 
 @overload
-def field(
+def field1(
     *,
-    default: Optional[str] = None,
+    default: str | None = None,
     resolver: None = None,
     init: Literal[True] = True,
-) -> Any:
-    ...
+) -> Any: ...
 
 
-def field(
+def field1(
     *,
-    default: Optional[str] = None,
-    resolver: Optional[Callable[[], Any]] = None,
+    default: str | None = None,
+    resolver: Callable[[], Any] | None = None,
     init: bool = True,
-) -> Any:
-    ...
+) -> Any: ...
+
+
+def field2(*, init=False, kw_only=True) -> Any: ...
 
 
 def __dataclass_transform__(
@@ -61,27 +46,39 @@ def __dataclass_transform__(
     eq_default: bool = True,
     order_default: bool = False,
     kw_only_default: bool = False,
-    field_specifiers: Tuple[Union[type, Callable[..., Any]], ...] = (()),
+    field_specifiers: tuple[type | Callable[..., Any], ...] = (()),
 ) -> Callable[[T], T]:
     # If used within a stub file, the following implementation can be
     # replaced with "...".
     return lambda a: a
 
 
-@__dataclass_transform__(kw_only_default=True, field_specifiers=(field,))
-def create_model(*, init: bool = True) -> Callable[[Type[T]], Type[T]]:
-    ...
+@__dataclass_transform__(kw_only_default=True, field_specifiers=(field1, field2))
+def create_model(*, init: bool = True) -> Callable[[type[T]], type[T]]: ...
 
 
 @create_model()
-class CustomerModel:
-    id: int = field(resolver=lambda: 0)
-    name: str = field(default="Voldemort")
+class CustomerModel1:
+    id: int = field1(resolver=lambda: 0)
+    name: str = field1(default="Voldemort")
 
 
-CustomerModel()
-CustomerModel(name="hi")
+CustomerModel1()
+CustomerModel1(name="hi")
 
 # This should generate an error because "id" is not
 # supposed to be part of the init function.
-CustomerModel(id=1, name="hi")
+CustomerModel1(id=1, name="hi")
+
+
+@create_model()
+class CustomerModel2:
+    id: int = field2()
+    name: str = field2(init=True)
+
+
+# This should generate an error because kw_only is True
+# by default for field2.
+CustomerModel2(1)
+
+CustomerModel2(name="Fred")

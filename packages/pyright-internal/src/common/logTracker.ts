@@ -6,25 +6,57 @@
  * A simple logging class that can be used to track nested loggings.
  */
 
-import { ConsoleInterface, LogLevel } from './console';
+import { ConsoleInterface, LogLevel, SupportName } from './console';
+import { ReadOnlyFileSystem } from './fileSystem';
 import { Duration, timingStats } from './timing';
+import { Uri } from './uri/uri';
 
 // Consider an operation "long running" if it goes longer than this.
 const durationThresholdForInfoInMs = 2000;
 
-export class LogTracker {
-    private _dummyState = new State();
-    private _indentation = '';
-    private _previousTitles: string[] = [];
+export function getPathForLogging(fs: ReadOnlyFileSystem, fileUri: Uri) {
+    if (fs.isMappedUri(fileUri)) {
+        return fs.getOriginalUri(fileUri);
+    }
 
-    constructor(private _console: ConsoleInterface | undefined, private _prefix: string) {}
+    return fileUri;
+}
+
+export class LogTracker implements SupportName {
+    private readonly _dummyState = new State();
+    private readonly _previousTitles: string[] = [];
+    private readonly _header: string;
+
+    private _indentation = '';
+
+    constructor(private readonly _console: ConsoleInterface | undefined, private readonly _name: string) {
+        this._header = SupportName.is(_console) && _console.name ? '' : `[${_name}] `;
+    }
+
+    get name() {
+        return SupportName.is(this._console) && this._console.name ? this._console.name : this._name;
+    }
 
     get logLevel() {
         const level = (this._console as any).level;
         return level ?? LogLevel.Error;
     }
 
-    log<T>(title: string, callback: (state: LogState) => T, minimalDuration = -1, logParsingPerf = false) {
+    log<T>(title: string, callback: (state: LogState) => T): T;
+    log<T>(title: string, callback: (state: LogState) => Promise<T>): Promise<T>;
+    log<T>(title: string, callback: (state: LogState) => T, minimalDuration: number, logParsingPerf: boolean): T;
+    log<T>(
+        title: string,
+        callback: (state: LogState) => Promise<T>,
+        minimalDuration: number,
+        logParsingPerf: boolean
+    ): Promise<T>;
+    log<T>(
+        title: string,
+        callback: (state: LogState) => T | Promise<T>,
+        minimalDuration = -1,
+        logParsingPerf = false
+    ): T | Promise<T> {
         // If no console is given, don't do anything.
         if (this._console === undefined) {
             return callback(this._dummyState);
@@ -45,39 +77,57 @@ export class LogTracker {
         const state = new State();
 
         try {
-            return callback(state);
-        } finally {
-            const msDuration = state.duration;
-            this._indentation = current;
+            const maybePromise = callback(state);
+            if (maybePromise instanceof Promise) {
+                return maybePromise
+                    .then((result) => {
+                        this._onComplete(state, current, title, minimalDuration, logParsingPerf);
+                        return result;
+                    })
+                    .catch((err) => {
+                        this._onComplete(state, current, title, minimalDuration, logParsingPerf);
+                        throw err;
+                    });
+            }
+            this._onComplete(state, current, title, minimalDuration, logParsingPerf);
+            return maybePromise;
+        } catch (err) {
+            this._onComplete(state, current, title, minimalDuration, logParsingPerf);
+            throw err;
+        }
+    }
 
-            // if we already printed our header (by nested calls), then it can't be skipped.
-            if (this._previousTitles.length > 0 && (state.isSuppressed() || msDuration <= minimalDuration)) {
-                // Get rid of myself so we don't even show header.
-                this._previousTitles.pop();
-            } else {
-                this._printPreviousTitles();
+    private _onComplete(state: State, current: string, title: string, minimalDuration = -1, logParsingPerf = false) {
+        const msDuration = state.duration;
+        this._indentation = current;
 
-                let output = `[${this._prefix}] ${this._indentation}${title}${state.get()} (${msDuration}ms)`;
+        // if we already printed our header (by nested calls), then it can't be skipped.
+        if (this._previousTitles.length > 0 && (state.isSuppressed() || msDuration <= minimalDuration)) {
+            // Get rid of myself so we don't even show header.
+            this._previousTitles.pop();
+        } else {
+            this._printPreviousTitles();
 
-                // Report parsing related perf info only if they occurred.
-                if (
-                    logParsingPerf &&
-                    state.fileReadTotal +
-                        state.tokenizeTotal +
-                        state.parsingTotal +
-                        state.resolveImportsTotal +
-                        state.bindingTotal >
-                        0
-                ) {
-                    output += ` [f:${state.fileReadTotal}, t:${state.tokenizeTotal}, p:${state.parsingTotal}, i:${state.resolveImportsTotal}, b:${state.bindingTotal}]`;
-                }
+            let output = `${this._header}${this._indentation}${title}${state.get()} (${msDuration}ms)`;
 
-                this._console.log(output);
+            // Report parsing related perf info only if they occurred.
+            if (
+                logParsingPerf &&
+                state.fileReadTotal +
+                    state.tokenizeTotal +
+                    state.parsingTotal +
+                    state.resolveImportsTotal +
+                    state.bindingTotal >
+                    0
+            ) {
+                output += ` [f:${state.fileReadTotal}, t:${state.tokenizeTotal}, p:${state.parsingTotal}, i:${state.resolveImportsTotal}, b:${state.bindingTotal}]`;
+            }
 
-                // If the operation took really long, log it as "info" so it is more visible.
-                if (msDuration >= durationThresholdForInfoInMs) {
-                    this._console.info(`[${this._prefix}] Long operation: ${title} (${msDuration}ms)`);
-                }
+            this._console?.log(output);
+
+            // If the operation took really long, log it as "info" so it is more visible.
+            if (msDuration >= durationThresholdForInfoInMs) {
+                this._console?.info(`${this._header}Long operation: ${title} (${msDuration}ms)`);
             }
         }
     }
@@ -91,7 +141,7 @@ export class LogTracker {
         }
 
         for (const previousTitle of this._previousTitles) {
-            this._console!.log(`[${this._prefix}] ${previousTitle}`);
+            this._console!.log(`${this._header}${previousTitle}`);
         }
 
         this._previousTitles.length = 0;

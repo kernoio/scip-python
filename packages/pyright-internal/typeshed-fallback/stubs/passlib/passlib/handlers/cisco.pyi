@@ -1,4 +1,5 @@
 from typing import ClassVar
+from typing_extensions import Self
 
 import passlib.utils.handlers as uh
 
@@ -18,10 +19,12 @@ class cisco_type7(uh.GenericHandler):
     min_salt_value: ClassVar[int]
     max_salt_value: ClassVar[int]
     @classmethod
-    def using(cls, salt: int | None = ..., **kwds): ...  # type: ignore[override]
+    def using(cls, salt: int | None = None, **kwds): ...  # type: ignore[override]
     @classmethod
-    def from_string(cls, hash): ...
+    def from_string(cls, hash) -> Self: ...  # type: ignore[override]
     salt: int
-    def __init__(self, salt: int | None = ..., **kwds) -> None: ...
+    def __init__(self, salt: int | None = None, **kwds) -> None: ...
     @classmethod
-    def decode(cls, hash, encoding: str = ...): ...
+    def decode(cls, hash, encoding: str = "utf-8"): ...
+
+__all__ = ["cisco_pix", "cisco_asa", "cisco_type7"]

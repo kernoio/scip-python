@@ -11,7 +11,7 @@ class _SHA2_Common(uh.HasManyBackends, uh.HasRounds, uh.HasSalt, uh.GenericHandl
     max_rounds: ClassVar[int]
     rounds_cost: ClassVar[str]
     implicit_rounds: bool
-    def __init__(self, implicit_rounds: bool | None = ..., **kwds) -> None: ...
+    def __init__(self, implicit_rounds: bool | None = None, **kwds) -> None: ...
     @classmethod
     def from_string(cls, hash: str | bytes) -> Self: ...  # type: ignore[override]
     backends: ClassVar[tuple[str, ...]]
@@ -27,3 +27,5 @@ class sha512_crypt(_SHA2_Common):
     ident: ClassVar[str]
     checksum_size: ClassVar[int]
     default_rounds: ClassVar[int]
+
+__all__ = ["sha512_crypt", "sha256_crypt"]

@@ -1,4 +1,2 @@
-version = "0.13.*"
-
-[tool.stubtest]
-ignore_missing_stub = true
+version = "0.15.*"
+upstream_repository = "https://github.com/PyCQA/pep8-naming"

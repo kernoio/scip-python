@@ -3,10 +3,10 @@
 # For example: `Pattern` and `Match` are not exported
 # and are redefined in `regex.regex module.
 
-from typing import Any, AnyStr, Generic
-from typing_extensions import Self, final
+from typing import Any, AnyStr, Generic, final
+from typing_extensions import Self
 
-from .regex import Match, Pattern
+from ._main import Match, Pattern
 
 @final
 class Splitter(Generic[AnyStr]):

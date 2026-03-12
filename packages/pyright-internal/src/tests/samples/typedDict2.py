@@ -35,6 +35,9 @@ movie4: Movie = {
     "name2": "Blade Runner"
 }
 
+movie5: Movie = Movie(movie3)
+movie6: Movie = Movie(movie3, year=2030, name="New movie")
+
 book1: BookBasedMovie = {"name": "Moonraker", "year": 1979, "based_on": "Moonraker"}
 
 book2: BookBasedMovie = {"year": 1979, "based_on": "Moonraker"}
@@ -50,7 +53,7 @@ book4: BookBasedMovie = {
 
 book5: BookBasedMovie = {
     "name": "Moonraker",
-    "year": 1979
+    "year": 1979,
     # This should generate an error because 'based_on' is
     # a required field, and it's not provided.
 }

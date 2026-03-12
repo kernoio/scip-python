@@ -1,7 +1,7 @@
 # This sample tests function parameter matching logic.
 
 
-from typing import Any, Dict, List
+from typing import Any, Callable, Literal
 
 
 def func1(a: int, *b: int):
@@ -35,6 +35,8 @@ func2("hi")
 func2("hi", b=3, c=4, d=5)
 
 str_dict = {"a": "3", "b": "2"}
+
+# This should generate a type error
 func2("hi", **str_dict)
 
 
@@ -81,20 +83,18 @@ def func7(*args: Any, param0: int, param1: int, param2: str):
 def func8(
     y: str,
     z: bool = ...,
-) -> None:
-    ...
+) -> None: ...
 
 
-kwargs1: Dict[str, int] = {}
+kwargs1: dict[str, int] = {}
 # This should generate an error because int is not compatible with str.
 func8(z=False, **kwargs1)
 
 
-class MyStr(str):
-    ...
+class MyStr(str): ...
 
 
-kwargs2: Dict[MyStr, MyStr] = {}
+kwargs2: dict[MyStr, MyStr] = {}
 func8(z=False, **kwargs2)
 
 
@@ -105,25 +105,79 @@ def func9(
     a: str = ...,
     b: str,
     c: str,
-) -> None:
-    ...
+) -> None: ...
 
 
-kwargs3: Dict[str, str] = {}
+kwargs3: dict[str, str] = {}
 func9(0, "", **kwargs3)
 
-args4: List[str] = ["hi"]
+args4: list[str] = ["hi"]
 func9(0, *args4, **kwargs3)
 
 # This should generate an error.
 func9(*args4, **kwargs3)
 
+
 def func10(x: int): ...
+
 
 func10(1, *())
 
 # This should generate an error.
-func10(1, *(1, ))
+func10(1, *(1,))
+
+func10(*(1,))
+
+# This should generate an error.
+func10(*(1, 1))
+
+# This should generate an error.
+func10(*("",))
+
 
 def func11(y: tuple[int, ...]):
     func10(1, *y)
+
+
+def func12(x: int, /, y: str):
+    pass
+
+
+# This should generate an error.
+func12(1, **{"z": None})
+
+
+def func13(*, a: str, b: str, c: int | None = None):
+    ...
+
+
+func_args1: dict[Literal["a", "b", "d"], str] = {
+    "a": "a",
+    "b": "b",
+    "d": "d",
+}
+
+func13(**func_args1)
+
+func_args2: dict[Literal["a", "b", "c"], str] = {
+    "a": "a",
+    "b": "b",
+    "c": "c",
+}
+
+
+# This should generate an error.
+func13(**func_args2)
+
+
+def func14(cb1: Callable[..., Any], cb2: Any, x: None):
+    cb1(**x)  # This should generate an error
+    cb2(**x)  # This should generate an error
+
+
+def func15(cb1: Callable[..., Any], cb2: Any, a: int, b: None | str):
+    print(*a)  # This should generate an error
+    print(*b)  # This should generate an error
+    cb1(*a)  # This should generate an error
+    cb2(*b)  # This should generate an error
+

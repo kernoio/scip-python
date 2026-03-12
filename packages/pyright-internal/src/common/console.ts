@@ -8,7 +8,10 @@
  * methods.
  */
 
+import { Disposable } from 'vscode-jsonrpc';
 import * as debug from './debug';
+import { addIfUnique, removeArrayElements } from './collectionUtils';
+import { isString } from './core';
 
 export enum LogLevel {
     Error = 'error',
@@ -16,12 +19,32 @@ export enum LogLevel {
     Info = 'info',
     Log = 'log',
 }
-
 export interface ConsoleInterface {
     error: (message: string) => void;
     warn: (message: string) => void;
     info: (message: string) => void;
     log: (message: string) => void;
+}
+
+export namespace ConsoleInterface {
+    export function is(obj: any): obj is ConsoleInterface {
+        return obj.error !== undefined && obj.warn !== undefined && obj.info !== undefined && obj.log !== undefined;
+    }
+
+    export function hasLevel(console: any): console is ConsoleInterface & { level: LogLevel } {
+        return is(console) && 'level' in console;
+    }
+}
+
+const levelMap = new Map([
+    [LogLevel.Error, 0],
+    [LogLevel.Warn, 1],
+    [LogLevel.Info, 2],
+    [LogLevel.Log, 3],
+]);
+
+export function getLevelNumber(level: LogLevel): number {
+    return levelMap.get(level) ?? 3;
 }
 
 // Avoids outputting errors to the console but counts
@@ -51,72 +74,107 @@ export class NullConsole implements ConsoleInterface {
 }
 
 export class StandardConsole implements ConsoleInterface {
-    log(message: string) {
-        console.info(message);
-    }
-
-    info(message: string) {
-        console.info(message);
-    }
-
-    warn(message: string) {
-        console.warn(message);
-    }
-
-    error(message: string) {
-        console.error(message);
-    }
-}
-
-export class StandardConsoleWithLevel extends StandardConsole {
-    constructor(private _maxLevel: LogLevel = LogLevel.Log) {
-        super();
-    }
+    constructor(private _maxLevel: LogLevel = LogLevel.Log) {}
 
     get level(): LogLevel {
         return this._maxLevel;
+    }
+
+    log(message: string) {
+        if (getLevelNumber(this._maxLevel) >= getLevelNumber(LogLevel.Log)) {
+            console.log(message);
+        }
+    }
+
+    info(message: string) {
+        if (getLevelNumber(this._maxLevel) >= getLevelNumber(LogLevel.Info)) {
+            console.info(message);
+        }
+    }
+
+    warn(message: string) {
+        if (getLevelNumber(this._maxLevel) >= getLevelNumber(LogLevel.Warn)) {
+            console.warn(message);
+        }
+    }
+
+    error(message: string) {
+        if (getLevelNumber(this._maxLevel) >= getLevelNumber(LogLevel.Error)) {
+            console.error(message);
+        }
     }
 }
 
 export class StderrConsole implements ConsoleInterface {
-    log(message: string) {
-        console.error(message);
-    }
-
-    info(message: string) {
-        console.error(message);
-    }
-
-    warn(message: string) {
-        console.error(message);
-    }
-
-    error(message: string) {
-        console.error(message);
-    }
-}
-
-export class StderrConsoleWithLevel extends StderrConsole {
-    constructor(private _maxLevel: LogLevel = LogLevel.Log) {
-        super();
-    }
+    constructor(private _maxLevel: LogLevel = LogLevel.Log) {}
 
     get level(): LogLevel {
         return this._maxLevel;
     }
+
+    log(message: string) {
+        if (getLevelNumber(this._maxLevel) >= getLevelNumber(LogLevel.Log)) {
+            console.error(message);
+        }
+    }
+
+    info(message: string) {
+        if (getLevelNumber(this._maxLevel) >= getLevelNumber(LogLevel.Info)) {
+            console.error(message);
+        }
+    }
+
+    warn(message: string) {
+        if (getLevelNumber(this._maxLevel) >= getLevelNumber(LogLevel.Warn)) {
+            console.error(message);
+        }
+    }
+
+    error(message: string) {
+        if (getLevelNumber(this._maxLevel) >= getLevelNumber(LogLevel.Error)) {
+            console.error(message);
+        }
+    }
 }
 
-export class ConsoleWithLogLevel implements ConsoleInterface {
-    private _levelMap: Map<string, number> = new Map([
-        [LogLevel.Error, 0],
-        [LogLevel.Warn, 1],
-        [LogLevel.Info, 2],
-        [LogLevel.Log, 3],
-    ]);
+export interface Chainable {
+    addChain(console: ConsoleInterface): void;
+    removeChain(console: ConsoleInterface): void;
+}
+
+export namespace Chainable {
+    export function is(value: any): value is Chainable {
+        return value && value.addChain && value.removeChain;
+    }
+}
+
+export interface Clonable {
+    clone(name: string): ConsoleInterface;
+}
+
+export namespace Clonable {
+    export function is(value: any): value is Clonable {
+        return value && value.clone;
+    }
+}
+
+export interface SupportName {
+    readonly name: string;
+}
+
+export namespace SupportName {
+    export function is(value: any): value is SupportName {
+        return value && isString(value.name);
+    }
+}
+
+export class ConsoleWithLogLevel implements ConsoleInterface, Chainable, Clonable, SupportName, Disposable {
+    private readonly _chains: ConsoleInterface[] = [];
 
     private _maxLevel = 2;
+    private _disposed = false;
 
-    constructor(private _console: ConsoleInterface, private _name = '') {}
+    constructor(private _console: ConsoleInterface, readonly name = '') {}
 
     get level(): LogLevel {
         switch (this._maxLevel) {
@@ -134,12 +192,23 @@ export class ConsoleWithLogLevel implements ConsoleInterface {
     }
 
     set level(value: LogLevel) {
-        let maxLevel = this._levelMap.get(value);
+        let maxLevel = getLevelNumber(value);
         if (maxLevel === undefined) {
-            maxLevel = this._levelMap.get(LogLevel.Info)!;
+            maxLevel = getLevelNumber(LogLevel.Info)!;
         }
 
         this._maxLevel = maxLevel;
+    }
+
+    dispose() {
+        this._disposed = true;
+    }
+
+    clone(name: string): ConsoleWithLogLevel {
+        // For now, we won't support cloning chains.
+        const newConsole = new ConsoleWithLogLevel(this._console, name);
+        newConsole._maxLevel = this._maxLevel;
+        return newConsole;
     }
 
     error(message: string) {
@@ -158,11 +227,25 @@ export class ConsoleWithLogLevel implements ConsoleInterface {
         this._log(LogLevel.Log, `${this._prefix}${message}`);
     }
 
+    addChain(console: ConsoleInterface): void {
+        addIfUnique(this._chains, console);
+    }
+
+    removeChain(console: ConsoleInterface): void {
+        removeArrayElements(this._chains, (i) => i === console);
+    }
+
     private get _prefix() {
-        return this._name ? `(${this._name}) ` : '';
+        return this.name ? `${this.name}: ` : '';
     }
 
     private _log(level: LogLevel, message: string): void {
+        if (this._disposed) {
+            return;
+        }
+
+        this._processChains(level, message);
+
         if (this._getNumericalLevel(level) > this._maxLevel) {
             return;
         }
@@ -171,9 +254,13 @@ export class ConsoleWithLogLevel implements ConsoleInterface {
     }
 
     private _getNumericalLevel(level: LogLevel): number {
-        const numericLevel = this._levelMap.get(level);
+        const numericLevel = getLevelNumber(level);
         debug.assert(numericLevel !== undefined, 'Logger: unknown log level.');
         return numericLevel !== undefined ? numericLevel : 2;
+    }
+
+    private _processChains(level: LogLevel, message: string) {
+        this._chains.forEach((c) => log(c, level, message));
     }
 }
 

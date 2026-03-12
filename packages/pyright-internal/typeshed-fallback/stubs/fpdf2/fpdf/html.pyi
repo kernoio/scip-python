@@ -1,97 +1,97 @@
-from _typeshed import Incomplete, Unused
-from collections.abc import Callable
+from _typeshed import Incomplete, SupportsKeysAndGetItem
+from collections.abc import Callable, Iterable, Mapping
 from html.parser import HTMLParser
 from logging import Logger
-from re import Match, Pattern
-from typing import ClassVar
-from typing_extensions import Final
+from typing import ClassVar, Final, Literal
+from typing_extensions import TypeAlias
 
 from fpdf import FPDF
 
+from .enums import Align, TextEmphasis
+from .fonts import FontFace
+from .table import Row, Table
+
 __author__: Final[str]
 __copyright__: Final[str]
-__license__: Final[str]
+
+_OLType: TypeAlias = Literal["1", "a", "A", "I", "i"]
 
 LOGGER: Logger
-BULLET_WIN1252: Final[str]
-DEFAULT_HEADING_SIZES: dict[str, int]
-LEADING_SPACE: Pattern[str]
-WHITESPACE: Pattern[str]
-TRAILING_SPACE: Pattern[str]
+MESSAGE_WAITING_WIN1252: Final = "\x95"
+BULLET_UNICODE: Final = "•"
+DEGREE_SIGN_WIN1252: Final = "\xb0"
+RING_OPERATOR_UNICODE: Final = "∘"
+HEADING_TAGS: Final[tuple[str, ...]]
+DEFAULT_TAG_STYLES: Final[dict[str, FontFace]]
+INLINE_TAGS: Final[tuple[str, ...]]
+BLOCK_TAGS: Final[tuple[str, ...]]
 
 COLOR_DICT: Final[dict[str, str]]
 
-def px2mm(px: float) -> float: ...
-def color_as_decimal(color: str | None = ...) -> tuple[int, int, int] | None: ...
+def color_as_decimal(color: str | None = "#000000") -> tuple[int, int, int] | None: ...
+def parse_css_style(style_attr: str) -> dict[str, str]: ...
 
 class HTML2FPDF(HTMLParser):
     HTML_UNCLOSED_TAGS: ClassVar[tuple[str, ...]]
-    pdf: Incomplete
-    image_map: Incomplete
-    li_tag_indent: Incomplete
-    table_line_separators: Incomplete
-    ul_bullet_char: Incomplete
-    style: Incomplete
-    href: str
-    align: str
-    page_links: Incomplete
-    font_stack: Incomplete
-    indent: int
-    bullet: Incomplete
-    font_size: Incomplete
-    font_color: Incomplete
-    table: Incomplete
-    table_col_width: Incomplete
-    table_col_index: Incomplete
-    td: Incomplete
-    th: Incomplete
-    tr: Incomplete
-    thead: Incomplete
-    tfoot: Incomplete
-    tr_index: Incomplete
-    theader: Incomplete
-    tfooter: Incomplete
-    theader_out: bool
-    table_row_height: int
-    heading_level: Incomplete
-    heading_sizes: Incomplete
-    heading_above: float
-    heading_below: float
+    TABLE_LINE_HEIGHT: ClassVar[float]
+
+    pdf: FPDF
+    image_map: Callable[[str], str]
+    ul_bullet_char: str
+    li_prefix_color: tuple[int, int, int]
     warn_on_tags_not_matching: bool
+
+    font_family: str
+    font_size_pt: float
+    font_emphasis: TextEmphasis
+    font_color: tuple[int, int, int]
+
+    style_stack: list[FontFace]
+    h: float
+    follows_trailing_space: bool
+    follows_heading: bool
+    href: str
+    align: float | Align | None
+    indent: int
+    line_height_stack: list[Incomplete]
+    ol_type: dict[int, _OLType]
+    bullet: list[Incomplete]
+    heading_level: Incomplete | None
+    render_title_tag: bool
+    table_line_separators: bool
+    table: Table | None
+    table_row: Row | None
+    tr: dict[str, str] | None
+    td_th: dict[str, str] | None
+    tag_indents: dict[str, int]
+    tag_styles: dict[str, FontFace]
+
     def __init__(
         self,
         pdf: FPDF,
         image_map: Callable[[str], str] | None = None,
-        li_tag_indent: int = 5,
-        dd_tag_indent: int = 10,
+        li_tag_indent: int | None = None,
+        dd_tag_indent: int | None = None,
         table_line_separators: bool = False,
-        ul_bullet_char: str = ...,
-        heading_sizes: Incomplete | None = None,
+        ul_bullet_char: str = "disc",
+        li_prefix_color: tuple[int, int, int] = (190, 0, 0),
+        heading_sizes: SupportsKeysAndGetItem[str, int] | Iterable[tuple[str, int]] | None = None,
+        pre_code_font: str | None = None,
         warn_on_tags_not_matching: bool = True,
-        **_: Unused,
-    ): ...
-    def width2unit(self, length): ...
+        tag_indents: dict[str, int] | None = None,
+        tag_styles: Mapping[str, FontFace] | None = None,
+        font_family: str = "times",
+        render_title_tag: bool = False,
+    ) -> None: ...
     def handle_data(self, data) -> None: ...
-    def box_shadow(self, w, h, bgcolor) -> None: ...
-    def output_table_header(self) -> None: ...
-    tfooter_out: bool
-    def output_table_footer(self) -> None: ...
-    def output_table_sep(self) -> None: ...
-    font_face: Incomplete
-    table_offset: Incomplete
     def handle_starttag(self, tag, attrs) -> None: ...
-    tbody: Incomplete
     def handle_endtag(self, tag) -> None: ...
-    h: Incomplete
-    def set_font(self, face: Incomplete | None = ..., size: Incomplete | None = ...) -> None: ...
-    def set_style(self, tag: Incomplete | None = ..., enable: bool = ...) -> None: ...
-    def set_text_color(self, r: Incomplete | None = ..., g: int = ..., b: int = ...) -> None: ...
-    def put_link(self, txt) -> None: ...
+    def put_link(self, text) -> None: ...
     def render_toc(self, pdf, outline) -> None: ...
     def error(self, message: str) -> None: ...
 
-def leading_whitespace_repl(matchobj: Match[str]) -> str: ...
-def whitespace_repl(matchobj: Match[str]) -> str: ...
+def ul_prefix(ul_type: str, is_ttf_font: bool | None) -> str: ...
+def ol_prefix(ol_type: _OLType, index: int) -> str: ...
 
 class HTMLMixin:
-    def __init__(self, *args: Incomplete, **kwargs: Incomplete) -> None: ...
+    def __init__(self, *args, **kwargs) -> None: ...

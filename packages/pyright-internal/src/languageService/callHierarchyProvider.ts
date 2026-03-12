@@ -20,100 +20,153 @@ import { Declaration, DeclarationType } from '../analyzer/declaration';
 import * as DeclarationUtils from '../analyzer/declarationUtils';
 import * as ParseTreeUtils from '../analyzer/parseTreeUtils';
 import { ParseTreeWalker } from '../analyzer/parseTreeWalker';
+import { isUserCode } from '../analyzer/sourceFileInfoUtils';
 import { TypeEvaluator } from '../analyzer/typeEvaluatorTypes';
+import { MemberAccessFlags, doForEachSubtype, lookUpClassMember, lookUpObjectMember } from '../analyzer/typeUtils';
 import { ClassType, isClassInstance, isFunction, isInstantiableClass } from '../analyzer/types';
-import {
-    ClassMemberLookupFlags,
-    doForEachSubtype,
-    isMaybeDescriptorInstance,
-    lookUpClassMember,
-    lookUpObjectMember,
-} from '../analyzer/typeUtils';
 import { throwIfCancellationRequested } from '../common/cancellationUtils';
-import { getFileName } from '../common/pathUtils';
+import { appendArray } from '../common/collectionUtils';
+import { isDefined } from '../common/core';
+import { ProgramView, ReferenceUseCase, SymbolUsageProvider } from '../common/extensibility';
+import { ReadOnlyFileSystem } from '../common/fileSystem';
+import { getSymbolKind } from '../common/lspUtils';
 import { convertOffsetsToRange } from '../common/positionUtils';
-import { rangesAreEqual } from '../common/textRange';
-import { ReferencesResult } from '../languageService/referencesProvider';
+import { ServiceKeys } from '../common/serviceKeys';
+import { Position, rangesAreEqual } from '../common/textRange';
+import { Uri } from '../common/uri/uri';
+import { convertUriToLspUriString } from '../common/uri/uriUtils';
+import { ReferencesProvider, ReferencesResult } from '../languageService/referencesProvider';
 import { CallNode, MemberAccessNode, NameNode, ParseNode, ParseNodeType } from '../parser/parseNodes';
-import { ParseResults } from '../parser/parser';
+import { ParseFileResults } from '../parser/parser';
+import { DocumentSymbolCollector } from './documentSymbolCollector';
+import { canNavigateToFile } from './navigationUtils';
 
 export class CallHierarchyProvider {
-    static getCallForDeclaration(
-        symbolName: string,
-        declaration: Declaration,
-        evaluator: TypeEvaluator,
-        token: CancellationToken,
-        callItemUri: string
-    ): CallHierarchyItem | undefined {
-        throwIfCancellationRequested(token);
+    private readonly _parseResults: ParseFileResults | undefined;
 
-        if (
-            declaration.type === DeclarationType.Function ||
-            declaration.type === DeclarationType.Class ||
-            declaration.type === DeclarationType.Alias
-        ) {
-            // make sure the alias is resolved to class or function
-            if (declaration.type === DeclarationType.Alias) {
-                const resolvedDecl = evaluator.resolveAliasDeclaration(declaration, true);
-                if (!resolvedDecl) {
-                    return undefined;
-                }
-                if (resolvedDecl.type !== DeclarationType.Function && resolvedDecl.type !== DeclarationType.Class) {
-                    return undefined;
-                }
-            }
-            const callItem: CallHierarchyItem = {
-                name: symbolName,
-                kind: getSymbolKind(declaration, evaluator),
-                uri: callItemUri,
-                range: declaration.range,
-                selectionRange: declaration.range,
-            };
-            return callItem;
+    constructor(
+        private _program: ProgramView,
+        private _fileUri: Uri,
+        private _position: Position,
+        private _token: CancellationToken
+    ) {
+        this._parseResults = this._program.getParseResults(this._fileUri);
+    }
+
+    onPrepare(): CallHierarchyItem[] | null {
+        throwIfCancellationRequested(this._token);
+        if (!this._parseResults) {
+            return null;
         }
 
-        return undefined;
+        const referencesResult = this._getDeclaration();
+        if (!referencesResult || referencesResult.declarations.length === 0) {
+            return null;
+        }
+
+        const { targetDecl, callItemUri, symbolName } = this._getTargetDeclaration(referencesResult);
+        if (
+            targetDecl.type !== DeclarationType.Function &&
+            targetDecl.type !== DeclarationType.Class &&
+            targetDecl.type !== DeclarationType.Alias
+        ) {
+            return null;
+        }
+
+        // make sure the alias is resolved to class or function
+        if (targetDecl.type === DeclarationType.Alias) {
+            const resolvedDecl = this._evaluator.resolveAliasDeclaration(targetDecl, true);
+            if (!resolvedDecl) {
+                return null;
+            }
+
+            if (resolvedDecl.type !== DeclarationType.Function && resolvedDecl.type !== DeclarationType.Class) {
+                return null;
+            }
+        }
+
+        const callItem: CallHierarchyItem = {
+            name: symbolName,
+            kind: getSymbolKind(targetDecl, this._evaluator, symbolName) ?? SymbolKind.Module,
+            uri: convertUriToLspUriString(this._program.fileSystem, callItemUri),
+            range: targetDecl.range,
+            selectionRange: targetDecl.range,
+        };
+
+        if (!canNavigateToFile(this._program.fileSystem, Uri.parse(callItem.uri, this._program.serviceProvider))) {
+            return null;
+        }
+
+        return [callItem];
     }
 
-    static getIncomingCallsForDeclaration(
-        filePath: string,
-        symbolName: string,
-        declaration: Declaration,
-        parseResults: ParseResults,
-        evaluator: TypeEvaluator,
-        token: CancellationToken
-    ): CallHierarchyIncomingCall[] | undefined {
-        throwIfCancellationRequested(token);
+    getIncomingCalls(): CallHierarchyIncomingCall[] | null {
+        throwIfCancellationRequested(this._token);
+        if (!this._parseResults) {
+            return null;
+        }
 
-        const callFinder = new FindIncomingCallTreeWalker(
-            filePath,
-            symbolName,
-            declaration,
-            parseResults,
-            evaluator,
-            token
+        const referencesResult = this._getDeclaration();
+        if (!referencesResult || referencesResult.declarations.length === 0) {
+            return null;
+        }
+
+        const { targetDecl, symbolName } = this._getTargetDeclaration(referencesResult);
+
+        const items: CallHierarchyIncomingCall[] = [];
+        const sourceFiles =
+            targetDecl.type === DeclarationType.Alias
+                ? [this._program.getSourceFileInfo(this._fileUri)!]
+                : this._program.getSourceFileInfoList();
+        for (const curSourceFileInfo of sourceFiles) {
+            if (isUserCode(curSourceFileInfo) || curSourceFileInfo.isOpenByClient) {
+                const filePath = curSourceFileInfo.uri;
+                const itemsToAdd = this._getIncomingCallsForDeclaration(filePath, symbolName, targetDecl);
+
+                if (itemsToAdd) {
+                    appendArray(items, itemsToAdd);
+                }
+
+                // This operation can consume significant memory, so check
+                // for situations where we need to discard the type cache.
+                this._program.handleMemoryHighUsage();
+            }
+        }
+
+        if (items.length === 0) {
+            return null;
+        }
+
+        return items.filter((item) =>
+            canNavigateToFile(this._program.fileSystem, Uri.parse(item.from.uri, this._program.serviceProvider))
         );
-
-        const incomingCalls = callFinder.findCalls();
-
-        return incomingCalls.length > 0 ? incomingCalls : undefined;
     }
 
-    static getOutgoingCallsForDeclaration(
-        declaration: Declaration,
-        parseResults: ParseResults,
-        evaluator: TypeEvaluator,
-        token: CancellationToken
-    ): CallHierarchyOutgoingCall[] | undefined {
-        throwIfCancellationRequested(token);
+    getOutgoingCalls(): CallHierarchyOutgoingCall[] | null {
+        throwIfCancellationRequested(this._token);
+        if (!this._parseResults) {
+            return null;
+        }
+
+        const referencesResult = this._getDeclaration();
+        if (!referencesResult || referencesResult.declarations.length === 0) {
+            return null;
+        }
+
+        const { targetDecl } = this._getTargetDeclaration(referencesResult);
 
         // Find the parse node root corresponding to the function or class.
         let parseRoot: ParseNode | undefined;
-        if (declaration.type === DeclarationType.Function) {
-            parseRoot = declaration.node;
-        } else if (declaration.type === DeclarationType.Class) {
+        const resolvedDecl = this._evaluator.resolveAliasDeclaration(targetDecl, /* resolveLocalNames */ true);
+        if (!resolvedDecl) {
+            return null;
+        }
+
+        if (resolvedDecl.type === DeclarationType.Function) {
+            parseRoot = resolvedDecl.node;
+        } else if (resolvedDecl.type === DeclarationType.Class) {
             // Look up the __init__ method for this class.
-            const classType = evaluator.getTypeForDeclaration(declaration)?.type;
+            const classType = this._evaluator.getTypeForDeclaration(resolvedDecl)?.type;
             if (classType && isInstantiableClass(classType)) {
                 // Don't perform a recursive search of parent classes in this
                 // case because we don't want to find an inherited __init__
@@ -121,12 +174,12 @@ export class CallHierarchyProvider {
                 const initMethodMember = lookUpClassMember(
                     classType,
                     '__init__',
-                    ClassMemberLookupFlags.SkipInstanceVariables |
-                        ClassMemberLookupFlags.SkipObjectBaseClass |
-                        ClassMemberLookupFlags.SkipBaseClasses
+                    MemberAccessFlags.SkipInstanceMembers |
+                        MemberAccessFlags.SkipObjectBaseClass |
+                        MemberAccessFlags.SkipBaseClasses
                 );
                 if (initMethodMember) {
-                    const initMethodType = evaluator.getTypeOfMember(initMethodMember);
+                    const initMethodType = this._evaluator.getTypeOfMember(initMethodMember);
                     if (initMethodType && isFunction(initMethodType)) {
                         const initDecls = initMethodMember.symbol.getDeclarations();
                         if (initDecls && initDecls.length > 0) {
@@ -141,20 +194,35 @@ export class CallHierarchyProvider {
         }
 
         if (!parseRoot) {
-            return undefined;
+            return null;
         }
 
-        const callFinder = new FindOutgoingCallTreeWalker(parseRoot, parseResults, evaluator, token);
-
+        const callFinder = new FindOutgoingCallTreeWalker(
+            this._program.fileSystem,
+            parseRoot,
+            this._parseResults,
+            this._evaluator,
+            this._token
+        );
         const outgoingCalls = callFinder.findCalls();
+        if (outgoingCalls.length === 0) {
+            return null;
+        }
 
-        return outgoingCalls.length > 0 ? outgoingCalls : undefined;
+        return outgoingCalls.filter((item) =>
+            canNavigateToFile(this._program.fileSystem, Uri.parse(item.to.uri, this._program.serviceProvider))
+        );
     }
 
-    static getTargetDeclaration(
-        referencesResult: ReferencesResult,
-        filePath: string
-    ): { targetDecl: Declaration; callItemUri: string; symbolName: string } {
+    private get _evaluator(): TypeEvaluator {
+        return this._program.evaluator!;
+    }
+
+    private _getTargetDeclaration(referencesResult: ReferencesResult): {
+        targetDecl: Declaration;
+        callItemUri: Uri;
+        symbolName: string;
+    } {
         // If there's more than one declaration, pick the target one.
         // We'll always prefer one with a declared type, and we'll always
         // prefer later declarations.
@@ -174,16 +242,46 @@ export class CallHierarchyProvider {
                 }
             }
         }
+
         let symbolName;
-        let callItemUri;
+
+        // Although the LSP specification requires a URI, we are using a file path
+        // here because it is converted to the proper URI by the caller.
+        // This simplifies our code and ensures compatibility with the LSP specification.
+        let callItemUri: Uri;
         if (targetDecl.type === DeclarationType.Alias) {
-            symbolName = (referencesResult.nodeAtOffset as NameNode).value;
-            callItemUri = filePath;
+            symbolName = (referencesResult.nodeAtOffset as NameNode).d.value;
+            callItemUri = this._fileUri;
         } else {
             symbolName = DeclarationUtils.getNameFromDeclaration(targetDecl) || referencesResult.symbolNames[0];
-            callItemUri = targetDecl.path;
+            callItemUri = targetDecl.uri;
         }
+
         return { targetDecl, callItemUri, symbolName };
+    }
+
+    private _getIncomingCallsForDeclaration(
+        fileUri: Uri,
+        symbolName: string,
+        declaration: Declaration
+    ): CallHierarchyIncomingCall[] | undefined {
+        throwIfCancellationRequested(this._token);
+
+        const callFinder = new FindIncomingCallTreeWalker(this._program, fileUri, symbolName, declaration, this._token);
+
+        const incomingCalls = callFinder.findCalls();
+        return incomingCalls.length > 0 ? incomingCalls : undefined;
+    }
+
+    private _getDeclaration(): ReferencesResult | undefined {
+        return ReferencesProvider.getDeclarationForPosition(
+            this._program,
+            this._fileUri,
+            this._position,
+            /* reporter */ undefined,
+            ReferenceUseCase.References,
+            this._token
+        );
     }
 }
 
@@ -191,8 +289,9 @@ class FindOutgoingCallTreeWalker extends ParseTreeWalker {
     private _outgoingCalls: CallHierarchyOutgoingCall[] = [];
 
     constructor(
+        private _fs: ReadOnlyFileSystem,
         private _parseRoot: ParseNode,
-        private _parseResults: ParseResults,
+        private _parseResults: ParseFileResults,
         private _evaluator: TypeEvaluator,
         private _cancellationToken: CancellationToken
     ) {
@@ -209,14 +308,14 @@ class FindOutgoingCallTreeWalker extends ParseTreeWalker {
 
         let nameNode: NameNode | undefined;
 
-        if (node.leftExpression.nodeType === ParseNodeType.Name) {
-            nameNode = node.leftExpression;
-        } else if (node.leftExpression.nodeType === ParseNodeType.MemberAccess) {
-            nameNode = node.leftExpression.memberName;
+        if (node.d.leftExpr.nodeType === ParseNodeType.Name) {
+            nameNode = node.d.leftExpr;
+        } else if (node.d.leftExpr.nodeType === ParseNodeType.MemberAccess) {
+            nameNode = node.d.leftExpr.d.member;
         }
 
         if (nameNode) {
-            const declarations = this._evaluator.getDeclarationsForNameNode(nameNode);
+            const declarations = this._evaluator.getDeclInfoForNameNode(nameNode)?.decls;
 
             if (declarations) {
                 // TODO - it would be better if we could match the call to the
@@ -237,7 +336,7 @@ class FindOutgoingCallTreeWalker extends ParseTreeWalker {
         // Determine whether the member corresponds to a property.
         // If so, we'll treat it as a function call for purposes of
         // finding outgoing calls.
-        const leftHandType = this._evaluator.getType(node.leftExpression);
+        const leftHandType = this._evaluator.getType(node.d.leftExpr);
         if (leftHandType) {
             doForEachSubtype(leftHandType, (subtype) => {
                 let baseType = subtype;
@@ -249,7 +348,7 @@ class FindOutgoingCallTreeWalker extends ParseTreeWalker {
                     return;
                 }
 
-                const memberInfo = lookUpObjectMember(baseType, node.memberName.value);
+                const memberInfo = lookUpObjectMember(baseType, node.d.member.d.value);
                 if (!memberInfo) {
                     return;
                 }
@@ -263,7 +362,7 @@ class FindOutgoingCallTreeWalker extends ParseTreeWalker {
 
                 if (isClassInstance(memberType) && ClassType.isPropertyClass(memberType)) {
                     propertyDecls.forEach((decl) => {
-                        this._addOutgoingCallForDeclaration(node.memberName, decl);
+                        this._addOutgoingCallForDeclaration(node.d.member, decl);
                     });
                 }
             });
@@ -283,9 +382,9 @@ class FindOutgoingCallTreeWalker extends ParseTreeWalker {
         }
 
         const callDest: CallHierarchyItem = {
-            name: nameNode.value,
-            kind: getSymbolKind(resolvedDecl, this._evaluator),
-            uri: resolvedDecl.path,
+            name: nameNode.d.value,
+            kind: getSymbolKind(resolvedDecl, this._evaluator, nameNode.d.value) ?? SymbolKind.Module,
+            uri: convertUriToLspUriString(this._fs, resolvedDecl.uri),
             range: resolvedDecl.range,
             selectionRange: resolvedDecl.range,
         };
@@ -304,6 +403,12 @@ class FindOutgoingCallTreeWalker extends ParseTreeWalker {
             this._outgoingCalls.push(outgoingCall);
         }
 
+        if (outgoingCall && outgoingCall.to.name !== nameNode.d.value) {
+            // If both the function and its alias are called in the same function,
+            // the name of the call item will be the resolved declaration name, not the alias.
+            outgoingCall.to.name = DeclarationUtils.getNameFromDeclaration(resolvedDecl) ?? nameNode.d.value;
+        }
+
         const fromRange: Range = convertOffsetsToRange(
             nameNode.start,
             nameNode.start + nameNode.length,
@@ -314,21 +419,34 @@ class FindOutgoingCallTreeWalker extends ParseTreeWalker {
 }
 
 class FindIncomingCallTreeWalker extends ParseTreeWalker {
-    private _incomingCalls: CallHierarchyIncomingCall[] = [];
+    private readonly _incomingCalls: CallHierarchyIncomingCall[] = [];
+    private readonly _declarations: Declaration[] = [];
+
+    private readonly _usageProviders: SymbolUsageProvider[];
+    private readonly _parseResults: ParseFileResults;
 
     constructor(
-        private _filePath: string,
-        private _symbolName: string,
-        private _declaration: Declaration,
-        private _parseResults: ParseResults,
-        private _evaluator: TypeEvaluator,
-        private _cancellationToken: CancellationToken
+        private readonly _program: ProgramView,
+        private readonly _fileUri: Uri,
+        private readonly _symbolName: string,
+        private readonly _targetDeclaration: Declaration,
+        private readonly _cancellationToken: CancellationToken
     ) {
         super();
+
+        this._parseResults = this._program.getParseResults(this._fileUri)!;
+        this._usageProviders = (this._program.serviceProvider.tryGet(ServiceKeys.symbolUsageProviderFactory) ?? [])
+            .map((f) =>
+                f.tryCreateProvider(ReferenceUseCase.References, [this._targetDeclaration], this._cancellationToken)
+            )
+            .filter(isDefined);
+
+        this._declarations.push(this._targetDeclaration);
+        this._usageProviders.forEach((p) => p.appendDeclarationsTo(this._declarations));
     }
 
     findCalls(): CallHierarchyIncomingCall[] {
-        this.walk(this._parseResults.parseTree);
+        this.walk(this._parseResults.parserOutput.parseTree);
         return this._incomingCalls;
     }
 
@@ -336,36 +454,31 @@ class FindIncomingCallTreeWalker extends ParseTreeWalker {
         throwIfCancellationRequested(this._cancellationToken);
 
         let nameNode: NameNode | undefined;
-
-        if (node.leftExpression.nodeType === ParseNodeType.Name) {
-            nameNode = node.leftExpression;
-        } else if (node.leftExpression.nodeType === ParseNodeType.MemberAccess) {
-            nameNode = node.leftExpression.memberName;
+        if (node.d.leftExpr.nodeType === ParseNodeType.Name) {
+            nameNode = node.d.leftExpr;
+        } else if (node.d.leftExpr.nodeType === ParseNodeType.MemberAccess) {
+            nameNode = node.d.leftExpr.d.member;
         }
 
         // Don't bother doing any more work if the name doesn't match.
-        if (nameNode && nameNode.value === this._symbolName) {
-            const declarations = this._evaluator.getDeclarationsForNameNode(nameNode);
-
+        if (nameNode && nameNode.d.value === this._symbolName) {
+            const declarations = this._getDeclarations(nameNode);
             if (declarations) {
-                const resolvedDecls = declarations
-                    .map((decl) => {
-                        return this._evaluator.resolveAliasDeclaration(decl, /* resolveLocalNames */ true);
-                    })
-                    .filter((decl) => decl !== undefined);
-                if (this._declaration.type === DeclarationType.Alias) {
+                if (this._targetDeclaration.type === DeclarationType.Alias) {
                     const resolvedCurDecls = this._evaluator.resolveAliasDeclaration(
-                        this._declaration,
+                        this._targetDeclaration,
                         /* resolveLocalNames */ true
                     );
                     if (
                         resolvedCurDecls &&
-                        resolvedDecls.some((decl) => DeclarationUtils.areDeclarationsSame(decl!, resolvedCurDecls))
+                        declarations.some((decl) => DeclarationUtils.areDeclarationsSame(decl!, resolvedCurDecls))
                     ) {
                         this._addIncomingCallForDeclaration(nameNode!);
                     }
                 } else if (
-                    resolvedDecls.some((decl) => DeclarationUtils.areDeclarationsSame(decl!, this._declaration))
+                    declarations.some((decl) =>
+                        this._declarations.some((t) => DeclarationUtils.areDeclarationsSame(decl, t))
+                    )
                 ) {
                     this._addIncomingCallForDeclaration(nameNode!);
                 }
@@ -378,11 +491,11 @@ class FindIncomingCallTreeWalker extends ParseTreeWalker {
     override visitMemberAccess(node: MemberAccessNode): boolean {
         throwIfCancellationRequested(this._cancellationToken);
 
-        if (node.memberName.value === this._symbolName) {
+        if (node.d.member.d.value === this._symbolName) {
             // Determine whether the member corresponds to a property.
             // If so, we'll treat it as a function call for purposes of
             // finding outgoing calls.
-            const leftHandType = this._evaluator.getType(node.leftExpression);
+            const leftHandType = this._evaluator.getType(node.d.leftExpr);
             if (leftHandType) {
                 doForEachSubtype(leftHandType, (subtype) => {
                     let baseType = subtype;
@@ -394,7 +507,7 @@ class FindIncomingCallTreeWalker extends ParseTreeWalker {
                         return;
                     }
 
-                    const memberInfo = lookUpObjectMember(baseType, node.memberName.value);
+                    const memberInfo = lookUpObjectMember(baseType, node.d.member.d.value);
                     if (!memberInfo) {
                         return;
                     }
@@ -406,8 +519,12 @@ class FindIncomingCallTreeWalker extends ParseTreeWalker {
                         return;
                     }
 
-                    if (propertyDecls.some((decl) => DeclarationUtils.areDeclarationsSame(decl!, this._declaration))) {
-                        this._addIncomingCallForDeclaration(node.memberName);
+                    if (
+                        propertyDecls.some((decl) =>
+                            DeclarationUtils.areDeclarationsSame(decl!, this._targetDeclaration)
+                        )
+                    ) {
+                        this._addIncomingCallForDeclaration(node.d.member);
                     }
                 });
             }
@@ -416,8 +533,30 @@ class FindIncomingCallTreeWalker extends ParseTreeWalker {
         return true;
     }
 
+    private get _evaluator(): TypeEvaluator {
+        return this._program.evaluator!;
+    }
+
+    private _getDeclarations(node: NameNode) {
+        const declarations = DocumentSymbolCollector.getDeclarationsForNode(
+            this._program,
+            node,
+            this._cancellationToken,
+            { resolveLocalNames: true }
+        );
+
+        const results = [...declarations];
+        this._usageProviders.forEach((p) => p.appendDeclarationsAt(node, declarations, results));
+
+        return results;
+    }
+
     private _addIncomingCallForDeclaration(nameNode: NameNode) {
-        const executionNode = ParseTreeUtils.getExecutionScopeNode(nameNode);
+        let executionNode = ParseTreeUtils.getExecutionScopeNode(nameNode);
+        while (executionNode && executionNode.nodeType === ParseNodeType.TypeParameterList) {
+            executionNode = ParseTreeUtils.getExecutionScopeNode(executionNode);
+        }
+
         if (!executionNode) {
             return;
         }
@@ -425,12 +564,12 @@ class FindIncomingCallTreeWalker extends ParseTreeWalker {
         let callSource: CallHierarchyItem;
         if (executionNode.nodeType === ParseNodeType.Module) {
             const moduleRange = convertOffsetsToRange(0, 0, this._parseResults.tokenizerOutput.lines);
-            const fileName = getFileName(this._filePath);
+            const fileName = this._program.fileSystem.getOriginalUri(this._fileUri).fileName;
 
             callSource = {
                 name: `(module) ${fileName}`,
                 kind: SymbolKind.Module,
-                uri: this._filePath,
+                uri: convertUriToLspUriString(this._program.fileSystem, this._fileUri),
                 range: moduleRange,
                 selectionRange: moduleRange,
             };
@@ -444,21 +583,21 @@ class FindIncomingCallTreeWalker extends ParseTreeWalker {
             callSource = {
                 name: '(lambda)',
                 kind: SymbolKind.Function,
-                uri: this._filePath,
+                uri: convertUriToLspUriString(this._program.fileSystem, this._fileUri),
                 range: lambdaRange,
                 selectionRange: lambdaRange,
             };
         } else {
             const functionRange = convertOffsetsToRange(
-                executionNode.name.start,
-                executionNode.name.start + executionNode.name.length,
+                executionNode.d.name.start,
+                executionNode.d.name.start + executionNode.d.name.length,
                 this._parseResults.tokenizerOutput.lines
             );
 
             callSource = {
-                name: executionNode.name.value,
+                name: executionNode.d.name.d.value,
                 kind: SymbolKind.Function,
-                uri: this._filePath,
+                uri: convertUriToLspUriString(this._program.fileSystem, this._fileUri),
                 range: functionRange,
                 selectionRange: functionRange,
             };
@@ -485,34 +624,4 @@ class FindIncomingCallTreeWalker extends ParseTreeWalker {
         );
         incomingCall.fromRanges.push(fromRange);
     }
-}
-
-function getSymbolKind(declaration: Declaration, evaluator: TypeEvaluator): SymbolKind {
-    let symbolKind: SymbolKind;
-
-    switch (declaration.type) {
-        case DeclarationType.Class:
-        case DeclarationType.SpecialBuiltInClass:
-            symbolKind = SymbolKind.Class;
-            break;
-
-        case DeclarationType.Function:
-            if (declaration.isMethod) {
-                const declType = evaluator.getTypeForDeclaration(declaration)?.type;
-                if (declType && isMaybeDescriptorInstance(declType, /* requireSetter */ false)) {
-                    symbolKind = SymbolKind.Property;
-                } else {
-                    symbolKind = SymbolKind.Method;
-                }
-            } else {
-                symbolKind = SymbolKind.Function;
-            }
-            break;
-
-        default:
-            symbolKind = SymbolKind.Function;
-            break;
-    }
-
-    return symbolKind;
 }

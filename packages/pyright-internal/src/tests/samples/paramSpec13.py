@@ -8,11 +8,10 @@ from typing import (
     Concatenate,
     Coroutine,
     Generic,
-    List,
     ParamSpec,
+    TypeAlias,
     TypeVar,
 )
-
 
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
@@ -22,39 +21,33 @@ _T = TypeVar("_T")
 AddIntParam = Callable[Concatenate[int, _P], _T]
 
 
-def func1(func: Callable[_P, _R]) -> AddIntParam[_P, _R]:
-    ...
+def func1(func: Callable[_P, _R]) -> AddIntParam[_P, _R]: ...
 
 
-def func2(a: str, b: List[int]) -> str:
-    ...
+def func2(a: str, b: list[int]) -> str: ...
 
 
 v1 = func1(func2)
-reveal_type(v1, expected_text="(int, a: str, b: List[int]) -> str")
+reveal_type(v1, expected_text="(int, a: str, b: list[int]) -> str")
 
 # This should generate an error because 'int' isn't assignable to
 # ParamSpec _P.
 X = AddIntParam[int, int]
 
 
-class RemoteResponse(Generic[_T]):
-    ...
+class RemoteResponse(Generic[_T]): ...
 
 
 class RemoteFunction(Generic[_P, _R]):
-    def __init__(self, func: Callable[_P, _R]) -> None:
-        ...
+    def __init__(self, func: Callable[_P, _R]) -> None: ...
 
-    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _R:
-        ...
+    def __call__(self, *args: _P.args, **kwargs: _P.kwargs) -> _R: ...
 
-    def remote(self, *args: _P.args, **kwargs: _P.kwargs) -> RemoteResponse[_R]:
-        ...
+    def remote(self, *args: _P.args, **kwargs: _P.kwargs) -> RemoteResponse[_R]: ...
 
 
 r1 = RemoteFunction(func2)
-reveal_type(r1, expected_text="RemoteFunction[(a: str, b: List[int]), str]")
+reveal_type(r1, expected_text="RemoteFunction[(a: str, b: list[int]), str]")
 
 v2 = r1("hi", [])
 reveal_type(v2, expected_text="str")
@@ -76,20 +69,18 @@ r1.remote(1, [])
 A = RemoteFunction[int, int]
 
 
-def remote(func: Callable[_P, _R]) -> RemoteFunction[_P, _R]:
-    ...
+def remote(func: Callable[_P, _R]) -> RemoteFunction[_P, _R]: ...
 
 
 v4 = remote(func2)
-reveal_type(v4, expected_text="RemoteFunction[(a: str, b: List[int]), str]")
+reveal_type(v4, expected_text="RemoteFunction[(a: str, b: list[int]), str]")
 
 
 Coro = Coroutine[Any, Any, _T]
 CoroFunc = Callable[_P, Coro[_T]]
 
 
-class ClassA:
-    ...
+class ClassA: ...
 
 
 CheckFunc = CoroFunc[Concatenate[ClassA, _P], bool]
@@ -110,3 +101,29 @@ asyncio.run(takes_check_func(my_check_func, 1, "2"))
 
 # This should generate an error because the signature doesn't match.
 asyncio.run(takes_check_func(my_check_func, 1, 2))
+
+
+TA1: TypeAlias = Callable[_P, Any]
+
+ta1_1: TA1[()] = lambda: 0
+
+# This should generate an error.
+ta1_2: TA1[()] = lambda x: x
+
+
+TA2: TypeAlias = Callable[Concatenate[int, _P], None]
+
+TA3: TypeAlias = TA2[int, int]
+TA4: TypeAlias = TA2[_P]
+
+# This should generate an error.
+TA5: TypeAlias = TA2[[int, _P]]
+
+# This should generate an error.
+TA6: TypeAlias = TA2[[int, ...]]
+
+TA7: TypeAlias = TA2[Concatenate[int, _P]]
+TA8: TypeAlias = TA2[Concatenate[int, ...]]
+
+# This should generate two errors.
+TA9: TypeAlias = TA2[int, Concatenate[int, _P]]

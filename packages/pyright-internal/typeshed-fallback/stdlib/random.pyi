@@ -4,6 +4,7 @@ from _typeshed import SupportsLenAndGetItem
 from collections.abc import Callable, Iterable, MutableSequence, Sequence, Set as AbstractSet
 from fractions import Fraction
 from typing import Any, ClassVar, NoReturn, TypeVar
+from typing_extensions import Self
 
 __all__ = [
     "Random",
@@ -30,31 +31,30 @@ __all__ = [
     "getrandbits",
     "choices",
     "SystemRandom",
+    "randbytes",
 ]
 
-if sys.version_info >= (3, 9):
-    __all__ += ["randbytes"]
+if sys.version_info >= (3, 12):
+    __all__ += ["binomialvariate"]
 
 _T = TypeVar("_T")
 
 class Random(_random.Random):
     VERSION: ClassVar[int]
-    def __init__(self, x: Any = None) -> None: ...
+    def __init__(self, x: int | float | str | bytes | bytearray | None = None) -> None: ...  # noqa: Y041
     # Using other `seed` types is deprecated since 3.9 and removed in 3.11
     # Ignore Y041, since random.seed doesn't treat int like a float subtype. Having an explicit
     # int better documents conventional usage of random.seed.
-    if sys.version_info >= (3, 9):
-        def seed(self, a: int | float | str | bytes | bytearray | None = None, version: int = 2) -> None: ...  # type: ignore[override]  # noqa: Y041
-    else:
-        def seed(self, a: Any = None, version: int = 2) -> None: ...
+    if sys.version_info < (3, 10):
+        # this is a workaround for pyright correctly flagging an inconsistent inherited constructor, see #14624
+        def __new__(cls, x: int | float | str | bytes | bytearray | None = None) -> Self: ...  # noqa: Y041
 
+    def seed(self, a: int | float | str | bytes | bytearray | None = None, version: int = 2) -> None: ...  # type: ignore[override]  # noqa: Y041
     def getstate(self) -> tuple[Any, ...]: ...
     def setstate(self, state: tuple[Any, ...]) -> None: ...
     def randrange(self, start: int, stop: int | None = None, step: int = 1) -> int: ...
     def randint(self, a: int, b: int) -> int: ...
-    if sys.version_info >= (3, 9):
-        def randbytes(self, n: int) -> bytes: ...
-
+    def randbytes(self, n: int) -> bytes: ...
     def choice(self, seq: SupportsLenAndGetItem[_T]) -> _T: ...
     def choices(
         self,
@@ -70,17 +70,22 @@ class Random(_random.Random):
         def shuffle(self, x: MutableSequence[Any], random: Callable[[], float] | None = None) -> None: ...
     if sys.version_info >= (3, 11):
         def sample(self, population: Sequence[_T], k: int, *, counts: Iterable[int] | None = None) -> list[_T]: ...
-    elif sys.version_info >= (3, 9):
+    else:
         def sample(
             self, population: Sequence[_T] | AbstractSet[_T], k: int, *, counts: Iterable[int] | None = None
         ) -> list[_T]: ...
-    else:
-        def sample(self, population: Sequence[_T] | AbstractSet[_T], k: int) -> list[_T]: ...
 
     def uniform(self, a: float, b: float) -> float: ...
     def triangular(self, low: float = 0.0, high: float = 1.0, mode: float | None = None) -> float: ...
+    if sys.version_info >= (3, 12):
+        def binomialvariate(self, n: int = 1, p: float = 0.5) -> int: ...
+
     def betavariate(self, alpha: float, beta: float) -> float: ...
-    def expovariate(self, lambd: float) -> float: ...
+    if sys.version_info >= (3, 12):
+        def expovariate(self, lambd: float = 1.0) -> float: ...
+    else:
+        def expovariate(self, lambd: float) -> float: ...
+
     def gammavariate(self, alpha: float, beta: float) -> float: ...
     if sys.version_info >= (3, 11):
         def gauss(self, mu: float = 0.0, sigma: float = 1.0) -> float: ...
@@ -100,9 +105,7 @@ class SystemRandom(Random):
     def getstate(self, *args: Any, **kwds: Any) -> NoReturn: ...
     def setstate(self, *args: Any, **kwds: Any) -> NoReturn: ...
 
-# ----- random function stubs -----
-
-_inst: Random = ...
+_inst: Random
 seed = _inst.seed
 random = _inst.random
 uniform = _inst.uniform
@@ -119,11 +122,12 @@ expovariate = _inst.expovariate
 vonmisesvariate = _inst.vonmisesvariate
 gammavariate = _inst.gammavariate
 gauss = _inst.gauss
+if sys.version_info >= (3, 12):
+    binomialvariate = _inst.binomialvariate
 betavariate = _inst.betavariate
 paretovariate = _inst.paretovariate
 weibullvariate = _inst.weibullvariate
 getstate = _inst.getstate
 setstate = _inst.setstate
 getrandbits = _inst.getrandbits
-if sys.version_info >= (3, 9):
-    randbytes = _inst.randbytes
+randbytes = _inst.randbytes
