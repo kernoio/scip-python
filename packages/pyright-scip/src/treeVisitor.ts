@@ -151,6 +151,7 @@ export interface TreeVisitorConfig {
     scipConfig: ScipConfig;
     pythonEnvironment: PythonEnvironment;
     globalSymbols: Map<number, ScipSymbol>;
+    projectModulePrefixes: Set<string>;
 }
 
 interface ScipSymbolOptions {
@@ -1432,22 +1433,18 @@ export class TreeVisitor extends ParseTreeWalker {
     }
 
     public getPackageInfo(node: ParseNode, moduleName: string): PythonPackage | undefined {
-        const nodeFileInfo = getFileInfo(node)!;
-        const nodeFilePath = path.resolve(nodeFileInfo.filePath);
-
-        const cacheKey = `${nodeFilePath}\0${moduleName}`;
-        if (this.packageInfoCache.has(cacheKey)) {
-            return this.packageInfoCache.get(cacheKey);
+        if (this.packageInfoCache.has(moduleName)) {
+            return this.packageInfoCache.get(moduleName);
         }
 
         let result: PythonPackage | undefined;
 
-        assertNeverNormalized(nodeFilePath);
-        if (nodeFilePath.startsWith(this.cwd)) {
+        const topLevel = moduleName.split('.')[0];
+        if (this.config.projectModulePrefixes.has(topLevel)) {
             result = this.projectPackage;
         }
 
-        this.packageInfoCache.set(cacheKey, result);
+        this.packageInfoCache.set(moduleName, result);
         return result;
     }
 
@@ -1665,6 +1662,12 @@ export class TreeVisitor extends ParseTreeWalker {
             ) {
                 return this.projectPackage;
             }
+            return undefined;
+        }
+
+        const topLevel = moduleName.split('.')[0];
+        if (this.config.projectModulePrefixes.has(topLevel)) {
+            return this.projectPackage;
         }
 
         return undefined;

@@ -13,6 +13,7 @@ import { normalizePathCase } from 'pyright-internal/common/pathUtils';
 import * as url from 'url';
 import { ScipConfig } from './lib';
 import { SourceFile } from 'pyright-internal/analyzer/sourceFile';
+import { getFileInfo } from 'pyright-internal/analyzer/analyzerNodeInfo';
 import { Counter } from './lsif-typescript/Counter';
 import { PyrightFileSystem } from 'pyright-internal/pyrightFileSystem';
 import PythonEnvironment from './virtualenv/PythonEnvironment';
@@ -213,6 +214,20 @@ export class Indexer {
 
         withStatus('Analyze project and dependencies', analyzer_fn);
 
+        const projectModulePrefixes = new Set<string>();
+        for (const sourceFile of projectSourceFiles) {
+            const parseResults = sourceFile.getParseResults();
+            if (parseResults) {
+                const fileInfo = getFileInfo(parseResults.parseTree);
+                if (fileInfo) {
+                    const topLevel = fileInfo.moduleName.split('.')[0];
+                    if (topLevel) {
+                        projectModulePrefixes.add(topLevel);
+                    }
+                }
+            }
+        }
+
         let externalSymbols: Map<string, scip.SymbolInformation> = new Map();
         const BATCH_SIZE = 50;
         withStatus('Parse and emit SCIP', (progress) => {
@@ -247,6 +262,7 @@ export class Indexer {
                     scipConfig: this.scipConfig,
                     pythonEnvironment: packageConfig,
                     globalSymbols,
+                    projectModulePrefixes,
                 });
 
                 try {
