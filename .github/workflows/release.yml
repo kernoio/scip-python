@@ -39,7 +39,13 @@ jobs:
       - run: npm run bundle
         working-directory: packages/pyright-scip
 
+      - name: Package with typeshed
+        run: |
+          cp -r packages/pyright-internal/typeshed-fallback packages/pyright-scip/dist/typeshed-fallback
+          cd packages/pyright-scip/dist
+          zip -rq scip-python.zip scip-python.js typeshed-fallback/
+
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.VERSION }}
-          files: packages/pyright-scip/dist/scip-python.js
+          files: packages/pyright-scip/dist/scip-python.zip
