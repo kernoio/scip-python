@@ -10,9 +10,10 @@ export interface IndexOptions {
     output: string;
     cwd: string;
     targetOnly?: string;
+    filter?: string;
+    extraPaths?: string[];
     infer?: { projectVersionFromCommit: boolean };
 
-    // Progress reporting configuration
     quiet: boolean;
     showProgressRateLimit: number | undefined;
 }
@@ -25,6 +26,10 @@ export interface SnapshotOptions extends IndexOptions {
 
 export interface EnvironmentOptions {
     output: string;
+}
+
+export interface DetectOptions {
+    cwd: string;
 }
 
 export const DEFAULT_OUTPUT_FILE = 'index.scip';
@@ -45,7 +50,8 @@ const parseOptionalNum = (value: string) => {
 export function mainCommand(
     indexAction: (options: IndexOptions) => void,
     snapshotAction: (dir: string, options: SnapshotOptions) => void,
-    environmentAction?: (options: EnvironmentOptions) => void
+    environmentAction?: (options: EnvironmentOptions) => void,
+    detectAction?: (options: DetectOptions) => void
 ): Command {
     const command = new Command();
     command.name('scip-python').version(packageJson.version).description('SCIP indexer for Python');
@@ -69,6 +75,7 @@ export function mainCommand(
             'Path to the output file. If this path is relative, it is interpreted relative to the value for --cwd.',
             DEFAULT_OUTPUT_FILE
         )
+        .option('--filter <package-name>', 'index a single named package from a monorepo workspace')
         .option('--quiet', 'run without logging and status information', false)
         .option(
             '--show-progress-rate-limit <limit>',
@@ -111,6 +118,13 @@ export function mainCommand(
         .requiredOption('--output <path>', 'the output path for the json file')
         .action((parsedOptions) => {
             environmentAction!(parsedOptions as EnvironmentOptions);
+        });
+
+    command
+        .command('detect')
+        .option('--cwd <path>', 'root directory to detect Python projects in', process.cwd())
+        .action((parsedOptions) => {
+            detectAction!(parsedOptions as DetectOptions);
         });
 
     return command;

@@ -1,19 +1,11 @@
-/**
- * webpack.config-cli.js
- * Copyright: Microsoft 2018
- */
-
-/* eslint-disable @typescript-eslint/no-var-requires */
 //@ts-check
 
 const path = require('path');
-const CopyPlugin = require('copy-webpack-plugin');
 const { TsconfigPathsPlugin } = require('tsconfig-paths-webpack-plugin');
 const { monorepoResourceNameMapper } = require('../../build/lib/webpack');
 const CleanTerminalPlugin = require('clean-terminal-webpack-plugin');
 
 const outPath = path.resolve(__dirname, 'dist');
-const typeshedFallback = path.resolve(__dirname, '..', 'pyright-internal', 'typeshed-fallback');
 
 /**@type {(env: any, argv: { mode: 'production' | 'development' | 'none' }) => import('webpack').Configuration}*/
 module.exports = (_, { mode }) => {
@@ -21,7 +13,6 @@ module.exports = (_, { mode }) => {
         context: __dirname,
         entry: {
             'scip-python': './src/main.ts',
-            'scip-python-test': './test/test-main.ts',
         },
         target: 'node',
         output: {
@@ -31,9 +22,6 @@ module.exports = (_, { mode }) => {
                 mode === 'development' ? '../[resource-path]' : monorepoResourceNameMapper('scip-python'),
             clean: true,
         },
-        // NOTE: Other settings for this value seem to show stack traces
-        // with mangled symbols that are not useful. Modify with care.
-        devtool: 'source-map',
         stats: {
             all: false,
             errors: true,
@@ -43,7 +31,7 @@ module.exports = (_, { mode }) => {
             extensions: ['.ts', '.js'],
             plugins: [
                 new TsconfigPathsPlugin({
-                    configFile: 'tsconfig.withBaseUrl.json', // TODO: Remove once the plugin understands TS 4.1's implicit baseUrl.
+                    configFile: 'tsconfig.withBaseUrl.json',
                     extensions: ['.ts', '.js'],
                 }),
             ],
@@ -63,26 +51,10 @@ module.exports = (_, { mode }) => {
             ],
         },
         plugins: [
-            new CopyPlugin({ patterns: [{ from: typeshedFallback, to: 'typeshed-fallback' }] }),
             new CleanTerminalPlugin(),
         ],
         optimization: {
-            splitChunks: {
-                cacheGroups: {
-                    defaultVendors: {
-                        name: 'vendor',
-                        test: /[\\/]node_modules[\\/]/,
-                        chunks: 'all',
-                        priority: -10,
-                    },
-                    pyright: {
-                        name: 'pyright-internal',
-                        chunks: 'all',
-                        test: /[\\/]pyright-internal[\\/]/,
-                        priority: -20,
-                    },
-                },
-            },
+            splitChunks: false,
         },
     };
 };

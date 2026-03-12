@@ -84,6 +84,11 @@ export class Indexer {
         let config = new ScipPyrightConfig(scipConfig, fs);
         this.pyrightConfig = config.getConfigOptions();
 
+        if (scipConfig.extraPaths && scipConfig.extraPaths.length > 0) {
+            const existing = this.pyrightConfig.defaultExtraPaths ?? [];
+            this.pyrightConfig.defaultExtraPaths = [...existing, ...scipConfig.extraPaths];
+        }
+
         if (!scipConfig.projectName || !scipConfig.projectVersion) {
             const { name, version } = Indexer.inferProjectInfo(
                 scipConfig.infer.projectVersionFromCommit,
@@ -194,10 +199,7 @@ export class Indexer {
         let projectSourceFiles: SourceFile[] = [];
         withStatus('Index workspace and track project files', () => {
             this.program.indexWorkspace((filepath: string) => {
-                // Do not index files outside the project because SCIP doesn't support it.
-                //
-                // Both filepath and this.scipConfig.projectRoot are NOT normalized.
-                if (filepath.indexOf(this.scipConfig.projectRoot) != 0) {
+                if (filepath.indexOf(this.getProjectRoot()) != 0) {
                     return;
                 }
 
