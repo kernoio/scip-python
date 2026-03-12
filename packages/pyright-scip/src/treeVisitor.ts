@@ -1445,8 +1445,6 @@ export class TreeVisitor extends ParseTreeWalker {
         assertNeverNormalized(nodeFilePath);
         if (nodeFilePath.startsWith(this.cwd)) {
             result = this.projectPackage;
-        } else {
-            result = this.config.pythonEnvironment.getPackageForModule(moduleName);
         }
 
         this.packageInfoCache.set(cacheKey, result);
@@ -1653,10 +1651,6 @@ export class TreeVisitor extends ParseTreeWalker {
     }
 
     public guessPackage(moduleName: string, declPath: string | undefined = undefined): PythonPackage | undefined {
-        if (moduleName === 'builtins') {
-            return this.stdlibPackage;
-        }
-
         if (moduleName.startsWith('.')) {
             return this.projectPackage;
         }
@@ -1664,10 +1658,6 @@ export class TreeVisitor extends ParseTreeWalker {
         if (declPath && declPath.length !== 0) {
             const p = path.resolve(declPath);
 
-            // HACK(id: inconsistent-casing-of-resolved-paths):
-            // On a case-insensitive filesystem, p can sometimes be fully lowercased
-            // (e.g. see the nested_items test), and sometimes it may have uppercase
-            // characters (e.g. the unique test).
             assertSometimesNormalized(p, 'guessPackage.declPath.resolved');
             if (
                 p.startsWith(this.cwd) ||
@@ -1675,22 +1665,6 @@ export class TreeVisitor extends ParseTreeWalker {
             ) {
                 return this.projectPackage;
             }
-        }
-
-        let pythonPackage = this.config.pythonEnvironment.getPackageForModule(moduleName);
-        if (pythonPackage) {
-            return pythonPackage;
-        }
-
-        pythonPackage = this.config.pythonEnvironment.guessPackage(moduleName);
-        if (pythonPackage) {
-            return pythonPackage;
-        }
-
-        let nameParts = moduleName.split('.');
-        let firstPart = nameParts[0];
-        if (Hardcoded.stdlib_module_names.has(firstPart)) {
-            return this.stdlibPackage;
         }
 
         return undefined;

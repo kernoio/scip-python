@@ -15,7 +15,7 @@ import { ScipConfig } from './lib';
 import { SourceFile } from 'pyright-internal/analyzer/sourceFile';
 import { Counter } from './lsif-typescript/Counter';
 import { PyrightFileSystem } from 'pyright-internal/pyrightFileSystem';
-import getEnvironment from './virtualenv/environment';
+import PythonEnvironment from './virtualenv/PythonEnvironment';
 import { version } from 'package.json';
 import { FileMatcher } from './FileMatcher';
 import { sendStatus, StatusUpdater, withStatus } from './status';
@@ -131,6 +131,8 @@ export class Indexer {
         // setTrackedFiles internally handles path normalization, so we don't normalize
         // paths here.
         this.program.setTrackedFiles([...this.projectFiles]);
+        const initialFileCount = this.program.getFileCount();
+        console.log(`DEBUG: After setTrackedFiles - Total files: ${initialFileCount}`);
 
         if (scipConfig.projectNamespace) {
             setProjectNamespace(scipConfig.projectName, this.scipConfig.projectNamespace!);
@@ -168,13 +170,12 @@ export class Indexer {
                 const filesTotal = this.program.getFileCount();
                 progress.message(`${filesCompleted} / ${filesTotal}`);
             }
+            const finalFileCount = this.program.getFileCount();
+            const finalUserFileCount = this.program.getUserFileCount();
+            console.log(`DEBUG: After analysis - Total files: ${finalFileCount}, User files: ${finalUserFileCount}`);
         };
 
-        const packageConfig = getEnvironment(
-            this.projectFiles,
-            this.scipConfig.projectVersion,
-            this.scipConfig.environment
-        );
+        const packageConfig = new PythonEnvironment(new Set(), '', []);
 
         const globalSymbols = new Map();
 

@@ -38,7 +38,7 @@ export class ScipPyrightConfig {
         this._configOptions = new ConfigOptions(scipConfig.projectRoot);
         this._configOptions.checkOnlyOpenFiles = false;
         this._configOptions.indexing = true;
-        this._configOptions.useLibraryCodeForTypes = true;
+        this._configOptions.useLibraryCodeForTypes = false;
     }
 
     getConfigOptions(): ConfigOptions {
@@ -50,7 +50,7 @@ export class ScipPyrightConfig {
         let config = this._getConfigOptions(host, options);
         config.checkOnlyOpenFiles = false;
         config.indexing = true;
-        config.useLibraryCodeForTypes = true;
+        config.useLibraryCodeForTypes = false;
         config.typeshedPath = this._configOptions.typeshedPath || getTypeShedFallbackPath(this.fs);
 
         return config;
