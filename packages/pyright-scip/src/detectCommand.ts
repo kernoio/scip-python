@@ -77,7 +77,8 @@ function findProjectMarkers(rootDir: string): string[] {
                     entry.name === 'pyproject.toml' ||
                     entry.name === 'setup.py' ||
                     entry.name === 'setup.cfg' ||
-                    entry.name === 'requirements.txt'
+                    entry.name === 'requirements.txt' ||
+                    entry.name === 'Pipfile'
                 ) {
                     markers.push(path.join(dir, entry.name));
                 }
@@ -151,6 +152,10 @@ function detectBuildTool(tomlData: Record<string, any>, projectDir: string): str
     if (tool?.['poetry']) return 'poetry';
     if (hasUvTool) return 'uv';
 
+    if (fs.existsSync(path.join(projectDir, 'poetry.lock'))) return 'poetry';
+
+    if (fs.existsSync(path.join(projectDir, 'Pipfile'))) return 'pipenv';
+
     return 'pip';
 }
 
@@ -214,6 +219,15 @@ function parsePyprojectToml(tomlPath: string): ParsedProject | undefined {
     if (fs.existsSync(path.join(projectDir, 'setup.cfg'))) {
         buildFiles.push('setup.cfg');
     }
+    if (buildTool === 'poetry' && fs.existsSync(path.join(projectDir, 'poetry.lock'))) {
+        buildFiles.push('poetry.lock');
+    }
+    if (buildTool === 'uv' && fs.existsSync(path.join(projectDir, 'uv.lock'))) {
+        buildFiles.push('uv.lock');
+    }
+    if (buildTool === 'pipenv' && fs.existsSync(path.join(projectDir, 'Pipfile.lock'))) {
+        buildFiles.push('Pipfile.lock');
+    }
 
     return {
         absDir: projectDir,
@@ -270,6 +284,7 @@ function parseSetupFiles(markers: string[], existingDirs: Set<string>): ParsedPr
         const setupBuildFiles: string[] = [];
         if (setupPyDirs.has(dir)) setupBuildFiles.push('setup.py');
         if (setupCfgDirs.has(dir)) setupBuildFiles.push('setup.cfg');
+        if (fs.existsSync(path.join(dir, 'requirements.txt'))) setupBuildFiles.push('requirements.txt');
 
         results.push({
             absDir: dir,
@@ -298,6 +313,28 @@ function parseRequirementsTxt(markers: string[], existingDirs: Set<string>): Par
             name: path.basename(dir).toLowerCase().replace(/_/g, '-'),
             buildTool: 'pip',
             buildFiles: ['requirements.txt'],
+            rawDependencies: [],
+            isUvWorkspaceRoot: false,
+            uvWorkspaceMembers: [],
+        });
+    }
+    return results;
+}
+
+function parsePipfile(markers: string[], existingDirs: Set<string>): ParsedProject[] {
+    const results: ParsedProject[] = [];
+    for (const marker of markers) {
+        if (path.basename(marker) !== 'Pipfile') continue;
+        const dir = path.dirname(marker);
+        if (existingDirs.has(dir)) continue;
+        const buildFiles: string[] = ['Pipfile'];
+        if (fs.existsSync(path.join(dir, 'Pipfile.lock'))) buildFiles.push('Pipfile.lock');
+        results.push({
+            absDir: dir,
+            configFile: 'Pipfile',
+            name: path.basename(dir).toLowerCase().replace(/_/g, '-'),
+            buildTool: 'pipenv',
+            buildFiles,
             rawDependencies: [],
             isUvWorkspaceRoot: false,
             uvWorkspaceMembers: [],
@@ -584,7 +621,9 @@ export function detect(cwd: string): DetectOutput {
     const parsedSetupFiles = parseSetupFiles(otherMarkers, pyprojectDirs);
     const setupDirs = new Set([...pyprojectDirs, ...parsedSetupFiles.map((p) => p.absDir)]);
     const parsedRequirements = parseRequirementsTxt(otherMarkers, setupDirs);
-    const allParsed = [...parsedPyprojects, ...parsedSetupFiles, ...parsedRequirements];
+    const requirementsDirs = new Set([...setupDirs, ...parsedRequirements.map((p) => p.absDir)]);
+    const parsedPipfiles = parsePipfile(otherMarkers, requirementsDirs);
+    const allParsed = [...parsedPyprojects, ...parsedSetupFiles, ...parsedRequirements, ...parsedPipfiles];
 
     if (allParsed.length === 0) {
         return { tool: 'python', projects: [] };
