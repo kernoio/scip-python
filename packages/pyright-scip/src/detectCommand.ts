@@ -13,7 +13,7 @@ interface ProjectConfig {
 export interface ProjectNode {
     name: string;
     path: string;
-    language: string;
+    languages: string[];
     buildTool: string;
     buildFiles: string[];
     config?: ProjectConfig;
@@ -361,7 +361,7 @@ function buildProjectNode(
     const node: ProjectNode = {
         name: parsed.name,
         path: relPath,
-        language: 'python',
+        languages: ['python'],
         buildTool: parsed.buildTool,
         buildFiles: parsed.buildFiles,
         config: { configFile: parsed.configFile, type: 'python' },
@@ -430,7 +430,7 @@ function buildNonWorkspaceTree(
         const node: ProjectNode = {
             name: parsed.name,
             path: relPath,
-            language: 'python',
+            languages: ['python'],
             buildTool: parsed.buildTool,
             buildFiles: parsed.buildFiles,
             config: { configFile: parsed.configFile, type: 'python' },
@@ -636,7 +636,7 @@ export function detect(cwd: string): DetectOutput {
             const node: ProjectNode = {
                 name: root.name,
                 path: relPath,
-                language: 'python',
+                languages: ['python'],
                 buildTool: root.buildTool,
                 buildFiles: root.buildFiles,
                 config: { configFile: root.configFile, type: 'python' },

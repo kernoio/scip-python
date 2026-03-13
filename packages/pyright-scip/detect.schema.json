@@ -25,10 +25,11 @@
           "type": "string",
           "description": "Path relative to the repository root. '.' for the root project itself."
         },
-        "language": {
-          "type": "string",
+        "languages": {
+          "type": "array",
+          "items": { "type": "string" },
           "description": "Detected primary language(s) of this project's source files.",
-          "default": "unknown"
+          "default": []
         },
         "buildTool": {
           "type": "string",
