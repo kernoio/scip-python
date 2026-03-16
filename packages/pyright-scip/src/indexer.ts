@@ -141,8 +141,9 @@ export class Indexer {
 
     public index(): void {
         const projectModulePrefixes = new Set<string>();
+        const moduleSrcRoot = this.scipConfig.targetSourceRoot ?? this.scipConfig.projectRoot;
         for (const filepath of this.projectFiles) {
-            const rel = path.relative(this.scipConfig.projectRoot, filepath);
+            const rel = path.relative(moduleSrcRoot, filepath);
             const topLevel = rel.split(path.sep)[0];
             if (topLevel && topLevel !== '.' && topLevel !== '..') {
                 projectModulePrefixes.add(topLevel);

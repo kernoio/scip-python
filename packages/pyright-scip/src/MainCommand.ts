@@ -16,6 +16,7 @@ export interface IndexOptions {
 
     siblingPackages?: Array<{ name: string; srcPath: string }>;
     workspaceRoot?: string;
+    targetSourceRoot?: string;
 
     quiet: boolean;
     showProgressRateLimit: number | undefined;

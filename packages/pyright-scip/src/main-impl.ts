@@ -56,19 +56,18 @@ export function applyFilterToOptions(options: IndexOptions, repoRoot: string): v
         throw new Error(`Package "${options.filter}" not found in workspace topology at ${repoRoot}`);
     }
 
-    const allPaths = collectAllProjectPaths(topology.projects);
-    const siblingAbsPaths = allPaths
-        .filter((p) => p !== target.path)
-        .map((p) => {
-            const abs = path.resolve(repoRoot, p);
+    const allNodes = collectAllNodes(topology.projects);
+    const ancestor = allNodes.find((n) => n.path !== target.path && target.path.startsWith(n.path === '.' ? '' : n.path + '/'));
+    const siblingNodes = allNodes.filter((n) => n.path !== target.path && n !== ancestor);
+
+    const siblingAbsPaths = siblingNodes
+        .map((n) => {
+            const abs = path.resolve(repoRoot, n.path);
             const srcDir = path.join(abs, 'src');
             return fs.existsSync(srcDir) ? srcDir : abs;
         });
 
-    const allNodes = collectAllNodes(topology.projects);
-    const ancestor = allNodes.find((n) => n.path !== target.path && target.path.startsWith(n.path === '.' ? '' : n.path + '/'));
-    options.siblingPackages = allNodes
-        .filter((n) => n.path !== target.path && n !== ancestor)
+    options.siblingPackages = siblingNodes
         .map((n) => {
             const abs = path.resolve(repoRoot, n.path);
             const srcDir = path.join(abs, 'src');
@@ -80,6 +79,7 @@ export function applyFilterToOptions(options: IndexOptions, repoRoot: string): v
     const targetSrc = path.join(targetAbs, 'src');
     const targetRoot = fs.existsSync(targetSrc) ? targetSrc : targetAbs;
     options.targetOnly = targetAbs;
+    options.targetSourceRoot = targetRoot;
     options.extraPaths = [targetRoot, ...siblingAbsPaths];
 }
 
