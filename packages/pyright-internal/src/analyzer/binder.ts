@@ -16,10 +16,9 @@
  * This binder doesn't perform any static type checking.
  */
 
-import { Commands } from '../commands/commands';
 import { DiagnosticLevel } from '../common/configOptions';
 import { assert, assertNever, fail } from '../common/debug';
-import { CreateTypeStubFileAction, Diagnostic } from '../common/diagnostic';
+import { Diagnostic } from '../common/diagnostic';
 import { DiagnosticRule } from '../common/diagnosticRules';
 import { stripFileExtension } from '../common/pathUtils';
 import { convertTextRangeToRange } from '../common/positionUtils';
@@ -424,19 +423,11 @@ export class Binder extends ParseTreeWalker {
         }
 
         if (reportStubMissing) {
-            const diagnostic = this._addDiagnostic(
+            this._addDiagnostic(
                 DiagnosticRule.reportMissingTypeStubs,
                 LocMessage.stubFileMissing().format({ importName: importResult.importName }),
                 node
             );
-            if (diagnostic) {
-                // Add a diagnostic action for resolving this diagnostic.
-                const createTypeStubAction: CreateTypeStubFileAction = {
-                    action: Commands.createTypeStub,
-                    moduleName: importResult.importName,
-                };
-                diagnostic.addAction(createTypeStubAction);
-            }
         }
 
         return true;

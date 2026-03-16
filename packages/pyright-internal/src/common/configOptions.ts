@@ -1004,6 +1004,8 @@ export class ConfigOptions {
     // type information?
     useLibraryCodeForTypes?: boolean | undefined;
 
+    workspaceOnlyImports = false;
+
     // Offer auto-import completions.
     autoImportCompletions = true;
 

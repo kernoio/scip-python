@@ -50,8 +50,6 @@ import { Program } from 'pyright-internal/analyzer/program';
 import { Counter } from './lsif-typescript/Counter';
 import PythonPackage from './virtualenv/PythonPackage';
 import * as Hardcoded from './hardcoded';
-import { Event, Hover, MarkupContent } from 'vscode-languageserver';
-import { HoverProvider } from 'pyright-internal/languageService/hoverProvider';
 import { convertDocStringToMarkdown } from 'pyright-internal/analyzer/docStringConversion';
 import { assert } from 'pyright-internal/common/debug';
 import { MemberAccessFlags, lookUpClassMember } from 'pyright-internal/analyzer/typeUtils';
@@ -119,11 +117,6 @@ const log = {
             console.log(..._transform(exprs));
         }
     },
-};
-
-const _cancellationToken = {
-    isCancellationRequested: false,
-    onCancellationRequested: Event.None,
 };
 
 function parseNodeToRange(name: ParseNode, lines: TextRangeCollection<TextRange>): Range {
@@ -266,18 +259,10 @@ export class TreeVisitor extends ParseTreeWalker {
         // so we need to push a new symbol
         const enclosingClass = ParseTreeUtils.getEnclosingClass(node, true);
         if (enclosingClass) {
-            const hoverResult = new HoverProvider(
-                this.program,
-                this.fileInfo!.fileUri,
-                convertOffsetToPosition(node.start, this.fileInfo!.lines),
-                'markdown',
-                _cancellationToken
-            ).getHover();
-
             this.document.symbols.push(
                 new scip.SymbolInformation({
                     symbol: this.getScipSymbol(node).value,
-                    documentation: _formatHover(hoverResult!),
+                    documentation: [],
                 })
             );
         }
@@ -664,22 +649,11 @@ export class TreeVisitor extends ParseTreeWalker {
 
             if (resolved && resolvedType && resolvedType.type) {
                 const isDefinition = node.id === resolved?.node.id;
-                const resolvedInfo = getFileInfo(node);
-                const hoverResult = new HoverProvider(
-                    this.program,
-                    resolvedInfo.fileUri,
-                    convertOffsetToPosition(node.start, resolvedInfo.lines),
-                    'markdown',
-                    _cancellationToken
-                ).getHover();
+                const symbol = this.typeToSymbol(node, declNode, resolvedType.type);
+                this.rawSetLsifSymbol(declNode, symbol, symbol.isLocal());
 
-                if (hoverResult) {
-                    const symbol = this.typeToSymbol(node, declNode, resolvedType.type);
-                    this.rawSetLsifSymbol(declNode, symbol, symbol.isLocal());
-
-                    if (isDefinition) {
-                        this.emitSymbolInformationOnce(node, symbol, _formatHover(hoverResult));
-                    }
+                if (isDefinition) {
+                    this.emitSymbolInformationOnce(node, symbol, []);
                 }
 
                 this.pushTypeReference(node, resolved.node, resolvedType.type);
@@ -875,8 +849,18 @@ export class TreeVisitor extends ParseTreeWalker {
             }
 
             moduleName = nodeFileInfo.moduleName;
-            const fileIsInProject = nodeFileInfo.fileUri.getFilePath().startsWith(this.config.scipConfig.projectRoot);
-            if (fileIsInProject) {
+            const filePath = nodeFileInfo.fileUri.getFilePath();
+            const siblingPackages = this.config.scipConfig.siblingPackages || [];
+            const sibling = siblingPackages.find((s) => filePath.startsWith(s.srcPath));
+            const fileIsInProject = filePath.startsWith(this.config.scipConfig.projectRoot) && !sibling;
+            if (sibling) {
+                const relativePath = path.relative(sibling.srcPath, filePath);
+                moduleName = relativePath
+                    .replace(/\/__init__\.py$/, '')
+                    .replace(/\.py$/, '')
+                    .replace(/\//g, '.');
+                pythonPackage = new PythonPackage(sibling.name, this.config.scipConfig.projectVersion, []);
+            } else if (fileIsInProject) {
                 if (moduleName === 'builtins' || Hardcoded.stdlib_module_names.has(moduleName)) {
                     const relativePath = path.relative(this.config.scipConfig.projectRoot, nodeFileInfo.fileUri.getFilePath());
                     moduleName = relativePath
@@ -1341,21 +1325,6 @@ export class TreeVisitor extends ParseTreeWalker {
         }
 
         if (documentation.length === 0) {
-            const nodeFileInfo = getFileInfo(node)!;
-            const hoverResult = new HoverProvider(
-                this.program,
-                nodeFileInfo.fileUri,
-                convertOffsetToPosition(node.start, nodeFileInfo.lines),
-                'markdown',
-                _cancellationToken
-            ).getHover();
-
-            if (hoverResult) {
-                documentation = _formatHover(hoverResult);
-            }
-        }
-
-        if (documentation.length === 0) {
             return;
         }
 
@@ -1387,26 +1356,6 @@ export class TreeVisitor extends ParseTreeWalker {
                 new scip.SymbolInformation({
                     symbol: symbol.value,
                     documentation,
-                })
-            );
-
-            return;
-        }
-
-        const nodeFileInfo = getFileInfo(node)!;
-        const hoverResult = new HoverProvider(
-            this.program,
-            nodeFileInfo.fileUri,
-            convertOffsetToPosition(node.start, nodeFileInfo.lines),
-            'markdown',
-            _cancellationToken
-        ).getHover();
-
-        if (hoverResult) {
-            this.document.symbols.push(
-                new scip.SymbolInformation({
-                    symbol: symbol.value,
-                    documentation: _formatHover(hoverResult),
                 })
             );
 
@@ -1535,12 +1484,16 @@ export class TreeVisitor extends ParseTreeWalker {
             return this.projectPackage;
         }
 
-        if (node.d.nameParts.length === 0) {
-            softAssert(false, 'how can this be?', node);
+        const importInfo = getImportInfo(node);
+        if (importInfo && importInfo.resolvedUris.length > 0) {
+            const moduleName = _formatModuleName(node);
+            const topLevel = moduleName.split('.')[0];
+            if (this.config.projectModulePrefixes.has(topLevel)) {
+                return new PythonPackage(topLevel, this.config.scipConfig.projectVersion, []);
+            }
         }
 
-        const declModuleName = _formatModuleName(node);
-        return this.guessPackage(declModuleName, undefined);
+        return undefined;
     }
 
     public guessPackage(moduleName: string, declPath: string | undefined = undefined): PythonPackage | undefined {
@@ -1584,17 +1537,6 @@ function _formatModuleName(node: ModuleNameNode): string {
     moduleName += node.d.nameParts.map((part) => part.d.value).join('.');
 
     return moduleName;
-}
-
-function _formatHover(hover: Hover): string[] {
-    const contents = hover.contents;
-    if (MarkupContent.is(contents)) {
-        return [contents.value];
-    }
-    if (Array.isArray(contents)) {
-        return contents.map((c) => (typeof c === 'string' ? c : c.value));
-    }
-    return [typeof contents === 'string' ? contents : contents.value];
 }
 
 function hasAncestor(node: ParseNode, ...types: ParseNodeType[]): boolean {

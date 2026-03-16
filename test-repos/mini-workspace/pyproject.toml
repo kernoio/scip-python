@@ -1,0 +1,6 @@
+[tool.uv.workspace]
+members = ["app", "lib"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"

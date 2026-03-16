@@ -7,7 +7,6 @@
  * Class that represents errors and warnings.
  */
 
-import { Commands } from '../commands/commands';
 import { appendArray } from './collectionUtils';
 import { DiagnosticLevel } from './configOptions';
 import { Range, TextRange } from './textRange';
@@ -64,10 +63,6 @@ export interface DiagnosticWithinFile {
     diagnostic: Diagnostic;
 }
 
-export interface CreateTypeStubFileAction extends DiagnosticAction {
-    action: Commands.createTypeStub;
-    moduleName: string;
-}
 
 export interface DiagnosticRelatedInfo {
     message: string;

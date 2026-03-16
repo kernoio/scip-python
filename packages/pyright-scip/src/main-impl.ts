@@ -38,7 +38,18 @@ function collectAllProjectPaths(nodes: ProjectNode[]): string[] {
     return paths;
 }
 
-function applyFilterToOptions(options: IndexOptions, repoRoot: string): void {
+function collectAllNodes(nodes: ProjectNode[]): ProjectNode[] {
+    const result: ProjectNode[] = [];
+    for (const node of nodes) {
+        result.push(node);
+        if (node.subProjects) {
+            result.push(...collectAllNodes(node.subProjects));
+        }
+    }
+    return result;
+}
+
+export function applyFilterToOptions(options: IndexOptions, repoRoot: string): void {
     const topology = detect(repoRoot);
     const target = findProjectNodeByName(topology.projects, options.filter!);
     if (!target) {
@@ -48,10 +59,26 @@ function applyFilterToOptions(options: IndexOptions, repoRoot: string): void {
     const allPaths = collectAllProjectPaths(topology.projects);
     const siblingAbsPaths = allPaths
         .filter((p) => p !== target.path)
-        .map((p) => path.resolve(repoRoot, p));
+        .map((p) => {
+            const abs = path.resolve(repoRoot, p);
+            const srcDir = path.join(abs, 'src');
+            return fs.existsSync(srcDir) ? srcDir : abs;
+        });
 
-    options.targetOnly = path.resolve(repoRoot, target.path);
-    options.extraPaths = siblingAbsPaths;
+    const allNodes = collectAllNodes(topology.projects);
+    options.siblingPackages = allNodes
+        .filter((n) => n.path !== target.path)
+        .map((n) => {
+            const abs = path.resolve(repoRoot, n.path);
+            const srcDir = path.join(abs, 'src');
+            return { name: n.name, srcPath: fs.existsSync(srcDir) ? srcDir : abs };
+        });
+
+    const targetAbs = path.resolve(repoRoot, target.path);
+    const targetSrc = path.join(targetAbs, 'src');
+    const targetRoot = fs.existsSync(targetSrc) ? targetSrc : targetAbs;
+    options.targetOnly = targetAbs;
+    options.extraPaths = [targetRoot, ...siblingAbsPaths];
 }
 
 function runSingleThreaded(options: IndexOptions, outputFile: string): void {
@@ -86,10 +113,11 @@ export function indexAction(options: IndexOptions): void {
         setShowProgressRateLimit(options.showProgressRateLimit);
     }
 
+    options.cwd = path.resolve(options.cwd);
     const projectRoot = options.cwd;
 
     if (options.filter) {
-        applyFilterToOptions(options, path.resolve(projectRoot));
+        applyFilterToOptions(options, projectRoot);
     }
 
     const originalWorkdir = process.cwd();

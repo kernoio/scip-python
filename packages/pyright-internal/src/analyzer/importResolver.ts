@@ -1690,6 +1690,10 @@ export class ImportResolver {
             bestResultSoFar = this._pickBestImport(bestResultSoFar, localImport, moduleDescriptor);
         }
 
+        if (this._configOptions.workspaceOnlyImports) {
+            return bestResultSoFar;
+        }
+
         // Check for a stdlib typeshed file.
         if (allowPyi && moduleDescriptor.nameParts.length > 0) {
             importLogger?.log(`Looking for typeshed stdlib path`);

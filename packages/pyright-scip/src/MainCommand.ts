@@ -14,6 +14,8 @@ export interface IndexOptions {
     extraPaths?: string[];
     infer?: { projectVersionFromCommit: boolean };
 
+    siblingPackages?: Array<{ name: string; srcPath: string }>;
+
     quiet: boolean;
     showProgressRateLimit: number | undefined;
 }

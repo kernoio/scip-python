@@ -7,8 +7,6 @@
  */
 
 import { MaxAnalysisTime } from '../analyzer/program';
-import { IBackgroundAnalysis } from '../backgroundAnalysisBase';
-import { Workspace } from '../workspaceFactory';
 import { DiagnosticBooleanOverridesMap, DiagnosticSeverityOverridesMap } from './commandLineOptions';
 import { SignatureDisplayType } from './configOptions';
 import { ConsoleInterface, LogLevel } from './console';
@@ -77,7 +75,7 @@ export namespace WindowInterface {
 
 export interface WorkspaceServices {
     fs: FileSystem | undefined;
-    backgroundAnalysis: IBackgroundAnalysis | undefined;
+    backgroundAnalysis: any;
 }
 
 export interface ServerOptions {
@@ -99,16 +97,16 @@ export interface LanguageServerBaseInterface {
     readonly supportAdvancedEdits: boolean;
     readonly serviceProvider: ServiceProvider;
 
-    createBackgroundAnalysis(serviceId: string, workspaceRoot: Uri): IBackgroundAnalysis | undefined;
+    createBackgroundAnalysis(serviceId: string, workspaceRoot: Uri): any;
     reanalyze(): void;
     restart(): void;
 
-    getWorkspaces(): Promise<Workspace[]>;
-    getSettings(workspace: Workspace): Promise<ServerSettings>;
+    getWorkspaces(): Promise<any[]>;
+    getSettings(workspace: any): Promise<ServerSettings>;
 }
 
 export interface LanguageServerInterface extends LanguageServerBaseInterface {
-    getWorkspaceForFile(fileUri: Uri, pythonPath?: Uri): Promise<Workspace>;
+    getWorkspaceForFile(fileUri: Uri, pythonPath?: Uri): Promise<any>;
 }
 
 export interface WindowService extends WindowInterface {

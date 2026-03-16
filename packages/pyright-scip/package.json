@@ -11,7 +11,7 @@
         "prepack": "npm run clean && shx cp ../../README.md . && shx cp ../../LICENSE.txt . && npm run build",
         "check-snapshots": "npm run update-snapshots -- --check",
         "update-snapshots": "node --enable-source-maps ./index-test.js",
-        "test": "jest --forceExit --detectOpenHandles",
+        "test": "jest --forceExit --detectOpenHandles --no-stack-trace",
         "webpack": "webpack --mode development --progress",
         "watch": "webpack --mode development --progress --watch",
         "fix:prettier": "prettier --write --loglevel error .",

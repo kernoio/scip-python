@@ -6,12 +6,8 @@ export class ScipSymbol extends TypescriptScipSymbol {
         super(value);
     }
 
-    public static override package(name: string, version: string): TypescriptScipSymbol {
-        name = normalizeNameOrVersion(name);
-        version = normalizeNameOrVersion(version);
-
-        // @ts-ignore
-        return new TypescriptScipSymbol(`scip-python python ${name} ${version} `);
+    public static override package(_name: string, _version: string): TypescriptScipSymbol {
+        return TypescriptScipSymbol.empty();
     }
 }
 

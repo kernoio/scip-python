@@ -1,4 +1,5 @@
 import * as child_process from 'child_process';
+import * as fs from 'fs';
 import * as path from 'path';
 import * as TOML from '@iarna/toml';
 import { Event } from 'vscode-jsonrpc';
@@ -114,6 +115,7 @@ export class Indexer {
         const matcher = new FileMatcher(this.pyrightConfig, fs);
         this.projectFiles = new Set(matcher.matchFiles(this.pyrightConfig.include, this.pyrightConfig.exclude));
         if (scipConfig.targetOnly) {
+            this.pyrightConfig.workspaceOnlyImports = true;
             scipConfig.targetOnly = path.resolve(scipConfig.targetOnly);
             const targetFiles: Set<string> = new Set();
             for (const file of this.projectFiles) {
@@ -145,6 +147,13 @@ export class Indexer {
             const topLevel = rel.split(path.sep)[0];
             if (topLevel && topLevel !== '.' && topLevel !== '..') {
                 projectModulePrefixes.add(topLevel);
+            }
+        }
+        for (const sibling of this.scipConfig.siblingPackages ?? []) {
+            for (const entry of fs.readdirSync(sibling.srcPath)) {
+                if (fs.statSync(path.join(sibling.srcPath, entry)).isDirectory()) {
+                    projectModulePrefixes.add(entry);
+                }
             }
         }
 
@@ -268,6 +277,10 @@ export class Indexer {
                     return;
                 }
 
+                for (const sym of doc.symbols) {
+                    sym.documentation = [];
+                }
+
                 batch.push(doc);
                 if (batch.length >= BATCH_SIZE) {
                     flushBatch();
@@ -280,6 +293,9 @@ export class Indexer {
         withStatus('Writing external symbols to SCIP index', () => {
             const externalSymbolIndex = new scip.Index();
             externalSymbolIndex.external_symbols = Array.from(externalSymbols.values());
+            for (const sym of externalSymbolIndex.external_symbols) {
+                sym.documentation = [];
+            }
             this.scipConfig.writeIndex(externalSymbolIndex);
         });
 

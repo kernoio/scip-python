@@ -46,7 +46,6 @@ import { SourceFileInfo } from './sourceFileInfo';
 import { createChainedByList, isUserCode, verifyNoCyclesInChainedFiles } from './sourceFileInfoUtils';
 import { SourceMapper } from './sourceMapper';
 import { Symbol, SymbolTable } from './symbol';
-import { createTracePrinter } from './tracePrinter';
 import { PrintTypeOptions, TypeEvaluator } from './typeEvaluatorTypes';
 import { createTypeEvaluatorWithTracker } from './typeEvaluatorWithTracker';
 import { getPrintTypeFlags } from './typePrinter';
@@ -1714,14 +1713,7 @@ export class Program {
                 evaluateUnknownImportsAsAny: !!this._configOptions.evaluateUnknownImportsAsAny,
                 verifyTypeCacheEvaluatorFlags: !!this._configOptions.internalTestMode,
             },
-            this._logTracker,
-            this._configOptions.logTypeEvaluationTime
-                ? createTracePrinter(
-                      this._importResolver.getImportRoots(
-                          this._configOptions.findExecEnvironment(this._configOptions.projectRoot)
-                      )
-                  )
-                : undefined
+            this._logTracker
         );
 
         return this._evaluator;

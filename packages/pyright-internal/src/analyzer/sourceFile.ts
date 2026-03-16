@@ -42,7 +42,6 @@ import { Token } from '../parser/tokenizerTypes';
 import { AnalyzerFileInfo, ImportLookup } from './analyzerFileInfo';
 import * as AnalyzerNodeInfo from './analyzerNodeInfo';
 import { Binder } from './binder';
-import { Checker } from './checker';
 import { CircularDependency } from './circularDependency';
 import * as CommentUtils from './commentUtils';
 import { ImportResolver } from './importResolver';
@@ -122,7 +121,6 @@ class WriteableData {
     parseDiagnostics: Diagnostic[] = [];
     commentDiagnostics: Diagnostic[] = [];
     bindDiagnostics: Diagnostic[] = [];
-    checkerDiagnostics: Diagnostic[] = [];
     taskListDiagnostics: Diagnostic[] = [];
     typeIgnoreLines = new Map<number, IgnoreComment>();
     typeIgnoreAll: IgnoreComment | undefined;
@@ -184,7 +182,6 @@ class WriteableData {
  parseDiagnostics=${this.parseDiagnostics?.length},
  commentDiagnostics=${this.commentDiagnostics?.length},
  bindDiagnostics=${this.bindDiagnostics?.length},
- checkerDiagnostics=${this.checkerDiagnostics?.length},
  taskListDiagnostics=${this.taskListDiagnostics?.length},
  accumulatedDiagnostics=${this.accumulatedDiagnostics?.length},
  typeIgnoreLines=${this.typeIgnoreLines?.size},
@@ -379,7 +376,7 @@ export class SourceFile {
     // Returns a list of cached diagnostics from the latest analysis job.
     // If the prevVersion is specified, the method returns undefined if
     // the diagnostics haven't changed.
-    getDiagnostics(options: ConfigOptions, prevDiagnosticVersion?: number): Diagnostic[] | undefined {
+    getDiagnostics(_options: ConfigOptions, prevDiagnosticVersion?: number): Diagnostic[] | undefined {
         if (this._writableData.diagnosticVersion === prevDiagnosticVersion) {
             return undefined;
         }
@@ -483,7 +480,6 @@ export class SourceFile {
         this._writableData.parseDiagnostics = [];
         this._writableData.commentDiagnostics = [];
         this._writableData.bindDiagnostics = [];
-        this._writableData.checkerDiagnostics = [];
         this._writableData.taskListDiagnostics = [];
         this._writableData.accumulatedDiagnostics = [];
         this._writableData.circularDependencies = [];
@@ -954,10 +950,10 @@ export class SourceFile {
 
     check(
         configOptions: ConfigOptions,
-        importLookup: ImportLookup,
-        importResolver: ImportResolver,
-        evaluator: TypeEvaluator,
-        dependentFiles?: ParserOutput[]
+        _importLookup: ImportLookup,
+        _importResolver: ImportResolver,
+        _evaluator: TypeEvaluator,
+        _dependentFiles?: ParserOutput[]
     ) {
         assert(!this.isParseRequired(), `Check called before parsing: state=${this._writableData.debugPrint()}`);
         assert(!this.isBindingRequired(), `Check called before binding: state=${this._writableData.debugPrint()}`);
@@ -970,18 +966,7 @@ export class SourceFile {
             try {
                 timingStats.typeCheckerTime.timeOperation(() => {
                     const checkDuration = new Duration();
-                    const checker = new Checker(
-                        importResolver,
-                        evaluator,
-                        this._writableData.parserOutput!,
-                        dependentFiles
-                    );
-                    this._writableData.isCheckingInProgress = true;
-                    checker.check();
                     this._writableData.isCheckingNeeded = false;
-
-                    const fileInfo = AnalyzerNodeInfo.getFileInfo(this._writableData.parserOutput!.parseTree)!;
-                    this._writableData.checkerDiagnostics = fileInfo.diagnosticSink.fetchAndClear();
                     this._writableData.checkTime = checkDuration.getDurationInMilliseconds();
                 });
             } catch (e: any) {
@@ -1005,8 +990,6 @@ export class SourceFile {
                         }),
                         getEmptyRange()
                     );
-
-                    this._writableData.checkerDiagnostics = diagSink.fetchAndClear();
 
                     // Mark the file as complete so we don't get into an infinite loop.
                     this._writableData.isCheckingNeeded = false;
@@ -1076,7 +1059,6 @@ export class SourceFile {
         appendArray(diagList, this._writableData.parseDiagnostics);
         appendArray(diagList, this._writableData.commentDiagnostics);
         appendArray(diagList, this._writableData.bindDiagnostics);
-        appendArray(diagList, this._writableData.checkerDiagnostics);
         appendArray(diagList, this._writableData.taskListDiagnostics);
 
         const prefilteredDiagList = diagList;
