@@ -189,8 +189,9 @@ function parsePyprojectToml(tomlPath: string): ParsedProject | undefined {
     const poetry = tool?.['poetry'] as Record<string, any> | undefined;
     const uv = tool?.['uv'] as Record<string, any> | undefined;
 
+    const uvWorkspace = uv?.['workspace'] as Record<string, any> | undefined;
     const hasBuildSystem = tomlData['build-system'] !== undefined;
-    if (!project && !poetry && !hasBuildSystem) {
+    if (!project && !poetry && !hasBuildSystem && !uvWorkspace) {
         return undefined;
     }
 
@@ -206,7 +207,6 @@ function parsePyprojectToml(tomlPath: string): ParsedProject | undefined {
         Array.isArray(rawDeps) ? rawDeps : Object.keys(rawDeps as Record<string, any>)
     );
 
-    const uvWorkspace = uv?.['workspace'] as Record<string, any> | undefined;
     const isUvWorkspaceRoot = uvWorkspace !== undefined && Array.isArray(uvWorkspace['members']);
     const uvWorkspaceMembers = isUvWorkspaceRoot
         ? (uvWorkspace!['members'] as string[])

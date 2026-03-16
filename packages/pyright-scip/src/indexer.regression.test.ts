@@ -11,23 +11,23 @@ const indexJs = path.join(pyrightScipDir, 'index.js');
 const FIXTURES: Record<string, { filter: string; appDocs: string[] }> = {
     'uv-workspace': {
         filter: 'app',
-        appDocs: ['app/__init__.py', 'app/main.py'],
+        appDocs: ['app/src/app/__init__.py', 'app/src/app/main.py'],
     },
     'poetry-path-deps': {
         filter: 'app',
-        appDocs: ['app/__init__.py', 'app/main.py'],
+        appDocs: ['app/src/app/__init__.py', 'app/src/app/main.py'],
     },
     'pdm-workspace': {
         filter: 'app',
-        appDocs: ['app/__init__.py', 'app/main.py'],
+        appDocs: ['app/src/app/__init__.py', 'app/src/app/main.py'],
     },
     'setuptools-multi-package': {
         filter: 'app',
-        appDocs: ['app/__init__.py', 'app/main.py'],
+        appDocs: ['app/src/app/__init__.py', 'app/src/app/main.py'],
     },
     'namespace-packages': {
         filter: 'acme-app',
-        appDocs: ['acme/app/__init__.py', 'acme/app/main.py'],
+        appDocs: ['acme-app/src/acme/app/__init__.py', 'acme-app/src/acme/app/main.py'],
     },
 };
 

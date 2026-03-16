@@ -123,7 +123,6 @@ export class Indexer {
                     targetFiles.add(file);
                 }
             }
-
             this.projectFiles = targetFiles;
         }
 
@@ -303,10 +302,12 @@ export class Indexer {
     }
 
     private getProjectRoot(): string {
+        if (this.scipConfig.workspaceRoot) {
+            return this.scipConfig.workspaceRoot;
+        }
         if (this.scipConfig.targetOnly && this.scipConfig.targetOnly !== '') {
             return this.scipConfig.targetOnly;
-        } else {
-            return this.scipConfig.projectRoot;
         }
+        return this.scipConfig.projectRoot;
     }
 }

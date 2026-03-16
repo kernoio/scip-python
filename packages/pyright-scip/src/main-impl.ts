@@ -66,13 +66,15 @@ export function applyFilterToOptions(options: IndexOptions, repoRoot: string): v
         });
 
     const allNodes = collectAllNodes(topology.projects);
+    const ancestor = allNodes.find((n) => n.path !== target.path && target.path.startsWith(n.path === '.' ? '' : n.path + '/'));
     options.siblingPackages = allNodes
-        .filter((n) => n.path !== target.path)
+        .filter((n) => n.path !== target.path && n !== ancestor)
         .map((n) => {
             const abs = path.resolve(repoRoot, n.path);
             const srcDir = path.join(abs, 'src');
             return { name: n.name, srcPath: fs.existsSync(srcDir) ? srcDir : abs };
         });
+    options.workspaceRoot = path.resolve(repoRoot, ancestor ? ancestor.path : '.');
 
     const targetAbs = path.resolve(repoRoot, target.path);
     const targetSrc = path.join(targetAbs, 'src');

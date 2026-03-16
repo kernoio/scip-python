@@ -15,6 +15,7 @@ export interface IndexOptions {
     infer?: { projectVersionFromCommit: boolean };
 
     siblingPackages?: Array<{ name: string; srcPath: string }>;
+    workspaceRoot?: string;
 
     quiet: boolean;
     showProgressRateLimit: number | undefined;
