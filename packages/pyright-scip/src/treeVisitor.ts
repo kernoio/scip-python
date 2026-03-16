@@ -1102,22 +1102,10 @@ export class TreeVisitor extends ParseTreeWalker {
                 return this.makeScipSymbol(importPackage, _formatModuleName(node.d.module), node.d.module);
             }
             case ParseNodeType.ImportFromAs: {
-                const decls = this.evaluator.getDeclInfoForNameNode(node.d.name)?.decls;
-                if (decls) {
-                    const decl = decls[0];
-                    const resolved = this.evaluator.resolveAliasDeclaration(decl, true);
-                    if (resolved && resolved.node && resolved.node.id != node.id) {
-                        return this.getScipSymbol(resolved.node);
-                    }
-                }
-
-                const parent = node.parent;
-                if (parent && parent.nodeType === ParseNodeType.ImportFrom) {
-                    const pythonPackage = this.moduleNameNodeToPythonPackage(parent.d.module);
-                    if (pythonPackage) {
-                        const moduleName = [...parent.d.module.d.nameParts, node.d.name].map((part) => part.d.value).join('.');
-                        return this.safeModuleInit(pythonPackage, moduleName);
-                    }
+                const type = this.getAliasedSymbolTypeForName(node, node.d.name.d.value);
+                const declNode = (type as any)?.shared?.declaration?.node;
+                if (declNode) {
+                    return this.getScipSymbol(declNode);
                 }
 
                 return ScipSymbol.local(this.counter.next());

@@ -476,7 +476,6 @@ export class SourceFile {
     }
 
     stripForIndexing(): void {
-        this._writableData.moduleSymbolTable = undefined;
         this._writableData.parseDiagnostics = [];
         this._writableData.commentDiagnostics = [];
         this._writableData.bindDiagnostics = [];
