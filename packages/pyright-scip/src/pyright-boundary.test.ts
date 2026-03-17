@@ -149,6 +149,215 @@ describe('pyright-internal boundary: uv-workspace --filter app', () => {
     });
 });
 
+describe('pyright-internal boundary: __getattr__ re-exports', () => {
+
+    it('resolves Helper import from lib (via __getattr__) to a declaration', () => {
+        const mainPyPath = path.join(UV_WORKSPACE, 'app', 'src', 'app', 'main.py');
+        const sourceFile = indexer.program.getSourceFile(UriEx.file(mainPyPath));
+        const tree = sourceFile!.getParseResults()!.parserOutput.parseTree;
+
+        const importFromNodes = findNodes(tree, (n) => n.nodeType === ParseNodeType.ImportFrom) as ImportFromNode[];
+        const libImport = importFromNodes.find((n) =>
+            n.d.module.d.nameParts.map((p: any) => p.d.value).join('.') === 'lib' &&
+            n.d.imports.some((imp: any) => imp.d.name.d.value === 'Helper')
+        );
+        expect(libImport).toBeDefined();
+
+        const helperImport = libImport!.d.imports.find(
+            (imp: any) => imp.d.name.d.value === 'Helper'
+        ) as ImportFromAsNode;
+        expect(helperImport).toBeDefined();
+
+        const evaluator = indexer.program.evaluator!;
+        const declInfo = evaluator.getDeclInfoForNameNode(helperImport.d.name as NameNode);
+        console.log('[__getattr__ debug] declInfo:', declInfo ? `${declInfo.decls.length} decls` : 'undefined');
+        if (declInfo) {
+            for (const decl of declInfo.decls) {
+                console.log(`  decl type=${decl.type} node=${decl.node?.nodeType} uri=${decl.uri?.getFilePath()}`);
+                const resolved = evaluator.resolveAliasDeclaration(decl, true);
+                console.log(`  resolved: type=${resolved?.type} node=${resolved?.node?.nodeType} uri=${resolved?.uri?.getFilePath()}`);
+            }
+        }
+
+        const symbolWithScope = evaluator.lookUpSymbolRecursive(helperImport, 'Helper', true);
+        console.log('[__getattr__ debug] symbolWithScope:', symbolWithScope ? 'found' : 'undefined');
+        if (symbolWithScope) {
+            const allDecls = symbolWithScope.symbol.getDeclarations();
+            console.log(`  all declarations: ${allDecls.length}`);
+            for (const decl of allDecls) {
+                console.log(`  decl type=${decl.type} node=${decl.node?.nodeType} uri=${decl.uri?.getFilePath()}`);
+            }
+        }
+
+        expect(declInfo).toBeDefined();
+    });
+
+    it('can resolve lib.helpers module in program', () => {
+        const helpersPath = path.join(UV_WORKSPACE, 'lib', 'src', 'lib', 'helpers.py');
+        const sourceFile = indexer.program.getSourceFile(UriEx.file(helpersPath));
+        console.log('[helpers debug] sourceFile exists:', !!sourceFile);
+        if (sourceFile) {
+            const tree = sourceFile.getParseResults()?.parserOutput.parseTree;
+            if (tree) {
+                const fileInfo = getFileInfo(tree);
+                console.log('[helpers debug] moduleName:', fileInfo?.moduleName);
+            }
+        }
+
+        const initPath = path.join(UV_WORKSPACE, 'lib', 'src', 'lib', '__init__.py');
+        const initFile = indexer.program.getSourceFile(UriEx.file(initPath));
+        console.log('[init debug] sourceFile exists:', !!initFile);
+        if (initFile) {
+            const tree = initFile.getParseResults()?.parserOutput.parseTree;
+            if (tree) {
+                const fileInfo = getFileInfo(tree);
+                console.log('[init debug] moduleName:', fileInfo?.moduleName);
+            }
+            console.log('[init debug] moduleSymbolTable entries:');
+            const symTable = initFile.getModuleSymbolTable();
+            if (symTable) {
+                symTable.forEach((sym, name) => {
+                    console.log(`  ${name}: ${sym.getDeclarations().map(d => `type=${d.type}`).join(', ')}`);
+                });
+            } else {
+                console.log('  moduleSymbolTable is NULL');
+            }
+        }
+    });
+
+    it('lib.helpers.py is NOT in project files (expected for --filter app)', () => {
+        const helpersInProjectFiles = [...indexer.projectFiles].some(f => f.includes('helpers.py'));
+        expect(helpersInProjectFiles).toBe(false);
+    });
+
+    it('resolves Handler import from lib.typedefs (module-level __getattr__) to a declaration', () => {
+        const mainPyPath = path.join(UV_WORKSPACE, 'app', 'src', 'app', 'main.py');
+        const sourceFile = indexer.program.getSourceFile(UriEx.file(mainPyPath));
+        const tree = sourceFile!.getParseResults()!.parserOutput.parseTree;
+
+        const importFromNodes = findNodes(tree, (n) => n.nodeType === ParseNodeType.ImportFrom) as ImportFromNode[];
+        const typedefsImport = importFromNodes.find((n) =>
+            n.d.module.d.nameParts.map((p: any) => p.d.value).join('.') === 'lib.typedefs' &&
+            n.d.imports.some((imp: any) => imp.d.name.d.value === 'Handler')
+        );
+        expect(typedefsImport).toBeDefined();
+
+        const handlerImport = typedefsImport!.d.imports.find(
+            (imp: any) => imp.d.name.d.value === 'Handler'
+        ) as ImportFromAsNode;
+        expect(handlerImport).toBeDefined();
+
+        const evaluator = indexer.program.evaluator!;
+        const declInfo = evaluator.getDeclInfoForNameNode(handlerImport.d.name as NameNode);
+        console.log('[lib.typedefs __getattr__ debug] declInfo:', declInfo ? `${declInfo.decls.length} decls` : 'undefined');
+        if (declInfo) {
+            for (const decl of declInfo.decls) {
+                console.log(`  decl type=${decl.type} node=${decl.node?.nodeType} uri=${decl.uri?.getFilePath()}`);
+                const resolved = evaluator.resolveAliasDeclaration(decl, true);
+                console.log(`  resolved: type=${resolved?.type} node=${resolved?.node?.nodeType} uri=${resolved?.uri?.getFilePath()}`);
+            }
+        }
+
+        const typedefsPath = path.join(UV_WORKSPACE, 'lib', 'src', 'lib', 'typedefs.py');
+        const typedefsFile = indexer.program.getSourceFile(UriEx.file(typedefsPath));
+        console.log('[lib.typedefs debug] sourceFile exists:', !!typedefsFile);
+        if (typedefsFile) {
+            const typedefsTree = typedefsFile.getParseResults()?.parserOutput.parseTree;
+            const fileInfo = getFileInfo(typedefsTree!);
+            console.log('[lib.typedefs debug] moduleName:', fileInfo?.moduleName);
+            const symTable = typedefsFile.getModuleSymbolTable();
+            if (symTable) {
+                symTable.forEach((sym, name) => {
+                    console.log(`  ${name}: ${sym.getDeclarations().map(d => `type=${d.type}`).join(', ')}`);
+                });
+            } else {
+                console.log('  moduleSymbolTable is NULL');
+            }
+        }
+
+        expect(declInfo).toBeDefined();
+    });
+
+    it('resolves AuthProvider import from lib.plugins to a declaration', () => {
+        const mainPyPath = path.join(UV_WORKSPACE, 'app', 'src', 'app', 'main.py');
+        const sourceFile = indexer.program.getSourceFile(UriEx.file(mainPyPath));
+        const tree = sourceFile!.getParseResults()!.parserOutput.parseTree;
+
+        const importFromNodes = findNodes(tree, (n) => n.nodeType === ParseNodeType.ImportFrom) as ImportFromNode[];
+        const pluginsImport = importFromNodes.find((n) =>
+            n.d.module.d.nameParts.map((p: any) => p.d.value).join('.') === 'lib.plugins' &&
+            n.d.imports.some((imp: any) => imp.d.name.d.value === 'AuthProvider')
+        );
+        expect(pluginsImport).toBeDefined();
+
+        const authProviderImport = pluginsImport!.d.imports.find(
+            (imp: any) => imp.d.name.d.value === 'AuthProvider'
+        ) as ImportFromAsNode;
+        expect(authProviderImport).toBeDefined();
+
+        const evaluator = indexer.program.evaluator!;
+        const declInfo = evaluator.getDeclInfoForNameNode(authProviderImport.d.name as NameNode);
+        console.log('[lib.plugins debug] declInfo:', declInfo ? `${declInfo.decls.length} decls` : 'undefined');
+        if (declInfo) {
+            for (const decl of declInfo.decls) {
+                console.log(`  decl type=${decl.type} node=${decl.node?.nodeType} uri=${decl.uri?.getFilePath()}`);
+                const resolved = evaluator.resolveAliasDeclaration(decl, true);
+                console.log(`  resolved: type=${resolved?.type} node=${resolved?.node?.nodeType} uri=${resolved?.uri?.getFilePath()}`);
+            }
+        }
+
+        const pluginsInitPath = path.join(UV_WORKSPACE, 'lib', 'src', 'lib', 'plugins', '__init__.py');
+        const pluginsInitFile = indexer.program.getSourceFile(UriEx.file(pluginsInitPath));
+        console.log('[lib.plugins __init__ debug] sourceFile exists:', !!pluginsInitFile);
+        if (pluginsInitFile) {
+            const symTable = pluginsInitFile.getModuleSymbolTable();
+            if (symTable) {
+                symTable.forEach((sym, name) => {
+                    console.log(`  ${name}: ${sym.getDeclarations().map(d => `type=${d.type}`).join(', ')}`);
+                });
+            } else {
+                console.log('  moduleSymbolTable is NULL');
+            }
+        }
+
+        expect(declInfo).toBeDefined();
+    });
+
+    it('resolveAliasDeclarationWithInfo provides more detail for __getattr__ imports', () => {
+        const mainPyPath = path.join(UV_WORKSPACE, 'app', 'src', 'app', 'main.py');
+        const sourceFile = indexer.program.getSourceFile(UriEx.file(mainPyPath));
+        const tree = sourceFile!.getParseResults()!.parserOutput.parseTree;
+
+        const importFromNodes = findNodes(tree, (n) => n.nodeType === ParseNodeType.ImportFrom) as ImportFromNode[];
+        const libImport = importFromNodes.find((n) =>
+            n.d.module.d.nameParts.map((p: any) => p.d.value).join('.') === 'lib' &&
+            n.d.imports.some((imp: any) => imp.d.name.d.value === 'Helper')
+        );
+
+        const helperImport = libImport!.d.imports.find(
+            (imp: any) => imp.d.name.d.value === 'Helper'
+        ) as ImportFromAsNode;
+
+        const evaluator = indexer.program.evaluator!;
+        const symbolWithScope = evaluator.lookUpSymbolRecursive(helperImport, 'Helper', true);
+        const allDecls = symbolWithScope!.symbol.getDeclarations();
+        const aliasDecl = allDecls.find((d: any) => d.type === 8);
+
+        if (aliasDecl) {
+            const resolvedInfo = evaluator.resolveAliasDeclarationWithInfo(aliasDecl, true, {});
+            console.log('[resolveWithInfo] result:', resolvedInfo ? 'exists' : 'undefined');
+            if (resolvedInfo) {
+                console.log('[resolveWithInfo] declaration:', resolvedInfo.declaration ? `type=${resolvedInfo.declaration.type} node=${resolvedInfo.declaration.node?.nodeType}` : 'undefined');
+                console.log('[resolveWithInfo] isPrivate:', resolvedInfo.isPrivate);
+            }
+        }
+
+        const type = evaluator.getTypeOfExpression(helperImport.d.name as any);
+        console.log('[type debug] category:', type?.type?.category);
+        console.log('[type debug] shared?.declaration?.node:', (type?.type as any)?.shared?.declaration?.node?.nodeType);
+    });
+});
+
 describe('TreeVisitor layer: uv-workspace --filter app', () => {
     const mainPyPath = path.join(UV_WORKSPACE, 'app', 'src', 'app', 'main.py');
 
@@ -202,7 +411,7 @@ describe('TreeVisitor layer: uv-workspace --filter app', () => {
         const doc = buildTreeVisitorDoc();
         const libOccurrence = doc.occurrences.find((occ) => {
             const range = occ.range;
-            return range[0] === 4 && range[1] === 5;
+            return range[0] === 5 && range[1] === 5;
         });
         expect(libOccurrence).toBeDefined();
         const symbol = libOccurrence!.symbol;
@@ -214,11 +423,95 @@ describe('TreeVisitor layer: uv-workspace --filter app', () => {
         const doc = buildTreeVisitorDoc();
         const configOccurrence = doc.occurrences.find((occ) => {
             const range = occ.range;
-            return range[0] === 4 && range[1] === 21;
+            return range[0] === 5 && range[1] === 21;
         });
         expect(configOccurrence).toBeDefined();
         const symbol = configOccurrence!.symbol;
         expect(symbol).toBe('`lib.core`/Config#');
         expect(symbol).not.toMatch(/^local /);
+    });
+});
+
+describe('pyright-internal boundary: langflow --filter lfx __getattr__ resolution', () => {
+    const LANGFLOW = path.join(FIXTURE_DIR, 'langflow');
+    let lfxIndexer: Indexer;
+    let lfxOrigCwd: string;
+
+    beforeAll(() => {
+        const options: IndexOptions = {
+            projectName: 'lfx',
+            projectVersion: '0.1.0',
+            dev: false,
+            output: '/dev/null',
+            cwd: LANGFLOW,
+            filter: 'lfx',
+            quiet: true,
+            showProgressRateLimit: undefined,
+        };
+
+        applyFilterToOptions(options, LANGFLOW);
+
+        lfxOrigCwd = process.cwd();
+        process.chdir(LANGFLOW);
+
+        lfxIndexer = new Indexer({
+            ...options,
+            projectRoot: LANGFLOW,
+            infer: { projectVersionFromCommit: false },
+            writeIndex: () => {},
+        });
+
+        const token = {
+            isCancellationRequested: false,
+            onCancellationRequested: Event.None,
+        };
+        while (lfxIndexer.program.analyze(
+            { openFilesTimeInMs: 10000, noOpenFilesTimeInMs: 10000 },
+            token
+        )) {}
+    });
+
+    afterAll(() => {
+        process.chdir(lfxOrigCwd);
+    });
+
+    it('lfx/schema/data.py is in project files and has a sourceFile', () => {
+        const dataInProject = [...lfxIndexer.projectFiles].some(f => f.includes('schema/data.py'));
+        expect(dataInProject).toBe(true);
+
+        const dataPath = [...lfxIndexer.projectFiles].find(f => f.includes('schema/data.py'))!;
+        const sourceFile = lfxIndexer.program.getSourceFile(UriEx.file(dataPath));
+        console.log('[lfx data.py] in projectFiles:', dataInProject);
+        console.log('[lfx data.py] sourceFile exists:', !!sourceFile);
+        expect(sourceFile).toBeDefined();
+    });
+
+    it('resolveAliasDeclaration for from lfx.schema import Data/Message (via __getattr__)', () => {
+        const savePath = [...lfxIndexer.projectFiles].find(f => f.includes('save_file.py'))!;
+        const sourceFile = lfxIndexer.program.getSourceFile(UriEx.file(savePath));
+        expect(sourceFile).toBeDefined();
+        const tree = sourceFile!.getParseResults()!.parserOutput.parseTree;
+
+        const importFromNodes = findNodes(tree, (n) => n.nodeType === ParseNodeType.ImportFrom) as ImportFromNode[];
+        const schemaImport = importFromNodes.find((n) =>
+            n.d.module.d.nameParts.map((p: any) => p.d.value).join('.') === 'lfx.schema'
+        );
+        expect(schemaImport).toBeDefined();
+
+        const evaluator = lfxIndexer.program.evaluator!;
+        for (const imp of schemaImport!.d.imports) {
+            const name = (imp as any).d.name.d.value;
+            const symbolWithScope = evaluator.lookUpSymbolRecursive(imp, name, true);
+            console.log(`[lfx.schema] ${name}: symbolWithScope=${symbolWithScope ? 'found' : 'undefined'}`);
+            if (!symbolWithScope) continue;
+
+            const decls = symbolWithScope.symbol.getDeclarations();
+            console.log(`[lfx.schema] ${name}: ${decls.length} declarations`);
+            for (const decl of decls) {
+                console.log(`  decl type=${decl.type} node=${decl.node?.nodeType} uri=${decl.uri?.getFilePath()}`);
+                const resolved = evaluator.resolveAliasDeclaration(decl, true);
+                console.log(`  resolved: ${resolved ? `type=${resolved.type} node=${resolved.node?.nodeType} uri=${resolved.uri?.getFilePath()}` : 'undefined'}`);
+            }
+        }
     });
 });

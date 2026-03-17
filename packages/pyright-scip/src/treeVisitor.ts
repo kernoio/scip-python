@@ -491,7 +491,15 @@ export class TreeVisitor extends ParseTreeWalker {
         }
 
         if (node.d.alias) {
-            this.pushNewOccurrence(node.d.alias, this.getLocalForDeclaration(node.d.alias));
+            const importTopLevel = moduleName.split('.')[0];
+            if (this.config.projectModulePrefixes.has(importTopLevel)) {
+                const pkg = this.moduleNameNodeToPythonPackage(node.d.module) || this.projectPackage;
+                const symbol = this.safeModuleInit(pkg, moduleName);
+                this.rawSetLsifSymbol(node.d.alias, symbol, true);
+                this.pushNewOccurrence(node.d.alias, symbol);
+            } else {
+                this.pushNewOccurrence(node.d.alias, this.getLocalForDeclaration(node.d.alias));
+            }
         }
 
         return false;
@@ -1087,11 +1095,12 @@ export class TreeVisitor extends ParseTreeWalker {
                 return this.getScipSymbol(node.parent!);
             }
             case ParseNodeType.ImportAs: {
-                const importTopLevel = moduleName.split('.')[0];
+                const importedModuleName = _formatModuleName((node as ImportAsNode).d.module);
+                const importTopLevel = importedModuleName.split('.')[0];
                 if (!this.config.projectModulePrefixes.has(importTopLevel)) {
                     return ScipSymbol.local(this.counter.next());
                 }
-                return this.safeModuleInit(pythonPackage, moduleName);
+                return this.safeModuleInit(pythonPackage, importedModuleName);
             }
             case ParseNodeType.ImportFrom: {
                 const importPackage = this.moduleNameNodeToPythonPackage(node.d.module);
@@ -1102,10 +1111,25 @@ export class TreeVisitor extends ParseTreeWalker {
                 return this.makeScipSymbol(importPackage, _formatModuleName(node.d.module), node.d.module);
             }
             case ParseNodeType.ImportFromAs: {
-                const type = this.getAliasedSymbolTypeForName(node, node.d.name.d.value);
-                const declNode = (type as any)?.shared?.declaration?.node;
-                if (declNode) {
-                    return this.getScipSymbol(declNode);
+                const result = this.getAliasedSymbolTypeForName(node, node.d.name.d.value);
+                if (result) {
+                    const typeDeclNode = (result.type as any)?.shared?.declaration?.node;
+                    if (typeDeclNode) {
+                        return this.getScipSymbol(typeDeclNode);
+                    }
+                    if (
+                        result.resolvedNode &&
+                        result.resolvedNode.nodeType !== ParseNodeType.ImportFromAs &&
+                        result.resolvedNode.nodeType !== ParseNodeType.ImportAs &&
+                        result.resolvedNode.nodeType !== ParseNodeType.ImportFrom
+                    ) {
+                        return this.getScipSymbol(result.resolvedNode);
+                    }
+                }
+
+                const getattrSymbol = this.resolveProjectModuleImportFallback(node);
+                if (getattrSymbol) {
+                    return getattrSymbol;
                 }
 
                 return ScipSymbol.local(this.counter.next());
@@ -1353,7 +1377,7 @@ export class TreeVisitor extends ParseTreeWalker {
     private getAliasedSymbolTypeForName(
         node: ImportAsNode | ImportFromAsNode | ImportFromNode,
         name: string
-    ): Type | undefined {
+    ): { type: Type | undefined; resolvedNode: ParseNode | undefined } | undefined {
         const symbolWithScope = this.evaluator.lookUpSymbolRecursive(node, name, /* honorCodeFlow */ true);
         if (!symbolWithScope) {
             return undefined;
@@ -1433,7 +1457,26 @@ export class TreeVisitor extends ParseTreeWalker {
         //     }
         // }
 
-        return this.evaluator.getInferredTypeOfDeclaration(symbolWithScope.symbol, aliasDecl);
+        return {
+            type: this.evaluator.getInferredTypeOfDeclaration(symbolWithScope.symbol, aliasDecl),
+            resolvedNode: resolvedAliasInfo.declaration?.node,
+        };
+    }
+
+    private resolveProjectModuleImportFallback(node: ImportFromAsNode): ScipSymbol | undefined {
+        const importFrom = node.parent;
+        if (!importFrom || importFrom.nodeType !== ParseNodeType.ImportFrom) {
+            return undefined;
+        }
+
+        const moduleName = _formatModuleName(importFrom.d.module);
+        const topLevel = moduleName.split('.')[0];
+        if (!this.config.projectModulePrefixes.has(topLevel)) {
+            return undefined;
+        }
+
+        const pkg = this.moduleNameNodeToPythonPackage(importFrom.d.module) || this.projectPackage;
+        return Symbols.makeTerm(this.safeModule(pkg, moduleName), node.d.name.d.value);
     }
 
     private moduleNameNodeToPythonPackage(
