@@ -6,57 +6,28 @@ import { diffSnapshot, formatSnapshot, writeSnapshot } from './lib';
 import { Input } from './lsif-typescript/Input';
 import { join } from 'path';
 import { IndexOptions, SnapshotOptions, mainCommand } from './MainCommand';
-import { detect, detectAction, ProjectNode } from './detectCommand';
+import { detect, detectAction, FlatProjectNode } from './detectCommand';
 import { sendStatus, setQuiet, setShowProgressRateLimit } from './status';
 import { Indexer } from './indexer';
 import { exit } from 'process';
 
-function findProjectNodeByName(nodes: ProjectNode[], name: string): ProjectNode | undefined {
+function findProjectNodeByName(nodes: FlatProjectNode[], name: string): FlatProjectNode | undefined {
     const normalized = name.toLowerCase().replace(/[_.-]+/g, '-');
-    for (const node of nodes) {
-        if (node.name === normalized) {
-            return node;
-        }
-        if (node.subProjects) {
-            const found = findProjectNodeByName(node.subProjects, name);
-            if (found) {
-                return found;
-            }
-        }
-    }
-    return undefined;
+    return nodes.find((n) => n.name === normalized);
 }
 
-function collectAllProjectPaths(nodes: ProjectNode[]): string[] {
-    const paths: string[] = [];
-    for (const node of nodes) {
-        paths.push(node.path);
-        if (node.subProjects) {
-            paths.push(...collectAllProjectPaths(node.subProjects));
-        }
-    }
-    return paths;
-}
-
-function collectAllNodes(nodes: ProjectNode[]): ProjectNode[] {
-    const result: ProjectNode[] = [];
-    for (const node of nodes) {
-        result.push(node);
-        if (node.subProjects) {
-            result.push(...collectAllNodes(node.subProjects));
-        }
-    }
-    return result;
+function collectAllNodes(workspaces: ReturnType<typeof detect>['workspaces']): FlatProjectNode[] {
+    return workspaces.flatMap((ws) => ws.projects);
 }
 
 export function applyFilterToOptions(options: IndexOptions, repoRoot: string): void {
     const topology = detect(repoRoot);
-    const target = findProjectNodeByName(topology.projects, options.filter!);
+    const allNodes = collectAllNodes(topology.workspaces);
+    const target = findProjectNodeByName(allNodes, options.filter!);
     if (!target) {
         throw new Error(`Package "${options.filter}" not found in workspace topology at ${repoRoot}`);
     }
 
-    const allNodes = collectAllNodes(topology.projects);
     const ancestor = allNodes.find((n) => n.path !== target.path && target.path.startsWith(n.path === '.' ? '' : n.path + '/'));
     const siblingNodes = allNodes.filter((n) => n.path !== target.path && n !== ancestor);
 

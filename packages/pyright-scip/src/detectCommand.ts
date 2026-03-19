@@ -10,20 +10,28 @@ interface ProjectConfig {
     type: string;
 }
 
-export interface ProjectNode {
+export interface FlatProjectNode {
     name: string;
     path: string;
+    parent: string | null;
+    children: string[];
+    producesArtifacts: boolean;
     languages: string[];
     buildTool: string;
     buildFiles: string[];
-    config?: ProjectConfig;
-    dependencies?: string[];
-    subProjects?: ProjectNode[];
+    dependencies: string[];
+    config: ProjectConfig;
+}
+
+export interface Workspace {
+    root: string;
+    type: string;
+    projects: FlatProjectNode[];
 }
 
 export interface DetectOutput {
     tool: string;
-    projects: ProjectNode[];
+    workspaces: Workspace[];
 }
 
 const SKIP_DIRS = new Set([
@@ -178,6 +186,8 @@ interface ParsedProject {
     rawDependencies: string[];
     isUvWorkspaceRoot: boolean;
     uvWorkspaceMembers: string[];
+    hasProjectSection: boolean;
+    hasPoetrySection: boolean;
 }
 
 function parsePyprojectToml(tomlPath: string): ParsedProject | undefined {
@@ -238,6 +248,8 @@ function parsePyprojectToml(tomlPath: string): ParsedProject | undefined {
         rawDependencies,
         isUvWorkspaceRoot,
         uvWorkspaceMembers,
+        hasProjectSection: project !== undefined,
+        hasPoetrySection: poetry !== undefined,
     };
 }
 
@@ -295,6 +307,8 @@ function parseSetupFiles(markers: string[], existingDirs: Set<string>): ParsedPr
             rawDependencies: [],
             isUvWorkspaceRoot: false,
             uvWorkspaceMembers: [],
+            hasProjectSection: false,
+            hasPoetrySection: false,
         });
     }
 
@@ -316,6 +330,8 @@ function parseRequirementsTxt(markers: string[], existingDirs: Set<string>): Par
             rawDependencies: [],
             isUvWorkspaceRoot: false,
             uvWorkspaceMembers: [],
+            hasProjectSection: false,
+            hasPoetrySection: false,
         });
     }
     return results;
@@ -338,6 +354,8 @@ function parsePipfile(markers: string[], existingDirs: Set<string>): ParsedProje
             rawDependencies: [],
             isUvWorkspaceRoot: false,
             uvWorkspaceMembers: [],
+            hasProjectSection: false,
+            hasPoetrySection: false,
         });
     }
     return results;
@@ -365,54 +383,18 @@ function normalizeName(name: string): string {
     return name.toLowerCase().replace(/[_.-]+/g, '-');
 }
 
-function buildProjectNode(
-    parsed: ParsedProject,
-    repoRoot: string,
-    allParsedByDir: Map<string, ParsedProject>,
-    allNameSet: Set<string>,
-    subProjectDirs: Set<string>
-): ProjectNode {
-    const relPath = path.relative(repoRoot, parsed.absDir) || '.';
-
-    const internalDeps = parsed.rawDependencies
-        .map((d) => normalizeName(d))
-        .filter((d) => allNameSet.has(d));
-
-    let subProjects: ProjectNode[] | undefined;
-
-    if (parsed.isUvWorkspaceRoot) {
-        const memberAbsDirs = resolveUvWorkspaceMembers(parsed.absDir, parsed.uvWorkspaceMembers);
-        const memberNodes: ProjectNode[] = [];
-        for (const memberDir of memberAbsDirs) {
-            const memberParsed = allParsedByDir.get(memberDir);
-            if (memberParsed && memberDir !== parsed.absDir) {
-                subProjectDirs.add(memberDir);
-                memberNodes.push(buildProjectNode(memberParsed, repoRoot, allParsedByDir, allNameSet, subProjectDirs));
-            }
-        }
-        if (memberNodes.length > 0) {
-            subProjects = memberNodes;
-        }
+function deriveWorkspaceType(rootParsed: ParsedProject, hasChildren: boolean): string {
+    if (rootParsed.isUvWorkspaceRoot) {
+        return 'uv';
     }
-
-    const node: ProjectNode = {
-        name: parsed.name,
-        path: relPath,
-        languages: ['python'],
-        buildTool: parsed.buildTool,
-        buildFiles: parsed.buildFiles,
-        config: { configFile: parsed.configFile, type: 'python' },
-    };
-
-    if (internalDeps.length > 0) {
-        node.dependencies = internalDeps;
+    if (rootParsed.hasPoetrySection && hasChildren) {
+        return 'poetry';
     }
+    return 'standalone';
+}
 
-    if (subProjects && subProjects.length > 0) {
-        node.subProjects = subProjects;
-    }
-
-    return node;
+function producesArtifacts(parsed: ParsedProject): boolean {
+    return !parsed.isUvWorkspaceRoot;
 }
 
 function isDescendant(potentialChild: string, potentialParent: string): boolean {
@@ -420,72 +402,144 @@ function isDescendant(potentialChild: string, potentialParent: string): boolean 
     return !rel.startsWith('..') && rel !== '';
 }
 
-function buildNonWorkspaceTree(
-    parsedProjects: ParsedProject[],
-    repoRoot: string,
-    allNameSet: Set<string>,
-    allParsedByDir: Map<string, ParsedProject>
-): ProjectNode[] {
-    const subProjectDirs = new Set<string>();
+interface TreeNode {
+    parsed: ParsedProject;
+    children: TreeNode[];
+    parentAbsDir: string | null;
+}
 
+function buildForest(
+    parsedProjects: ParsedProject[],
+    repoRoot: string
+): TreeNode[] {
     const sortedByDepth = [...parsedProjects].sort((a, b) => {
         const depthA = path.relative(repoRoot, a.absDir).split(path.sep).length;
         const depthB = path.relative(repoRoot, b.absDir).split(path.sep).length;
         return depthA - depthB;
     });
 
-    const parentMap = new Map<string, string>();
+    const nodeMap = new Map<string, TreeNode>();
+    for (const parsed of sortedByDepth) {
+        nodeMap.set(parsed.absDir, { parsed, children: [], parentAbsDir: null });
+    }
+
     for (let i = 0; i < sortedByDepth.length; i++) {
+        const candidate = sortedByDepth[i];
         for (let j = 0; j < i; j++) {
-            if (isDescendant(sortedByDepth[i].absDir, sortedByDepth[j].absDir)) {
-                if (!parentMap.has(sortedByDepth[i].absDir)) {
-                    parentMap.set(sortedByDepth[i].absDir, sortedByDepth[j].absDir);
+            const potentialParent = sortedByDepth[j];
+            if (isDescendant(candidate.absDir, potentialParent.absDir)) {
+                const candidateNode = nodeMap.get(candidate.absDir)!;
+                if (candidateNode.parentAbsDir === null) {
+                    candidateNode.parentAbsDir = potentialParent.absDir;
+                    nodeMap.get(potentialParent.absDir)!.children.push(candidateNode);
                 }
             }
         }
     }
 
-    const childrenMap = new Map<string, ParsedProject[]>();
-    for (const [childDir, parentDir] of parentMap.entries()) {
-        const child = allParsedByDir.get(childDir)!;
-        if (!childrenMap.has(parentDir)) {
-            childrenMap.set(parentDir, []);
-        }
-        childrenMap.get(parentDir)!.push(child);
-        subProjectDirs.add(childDir);
+    return sortedByDepth
+        .filter((p) => nodeMap.get(p.absDir)!.parentAbsDir === null)
+        .map((p) => nodeMap.get(p.absDir)!);
+}
+
+function flattenTreeNode(
+    treeNode: TreeNode,
+    parentRelPath: string | null,
+    repoRoot: string,
+    allNameSet: Set<string>
+): FlatProjectNode[] {
+    const relPath = path.relative(repoRoot, treeNode.parsed.absDir) || '.';
+    const childRelPaths = treeNode.children.map(
+        (c) => path.relative(repoRoot, c.parsed.absDir) || '.'
+    );
+
+    const internalDeps = treeNode.parsed.rawDependencies
+        .map((d) => normalizeName(d))
+        .filter((d) => allNameSet.has(d));
+
+    const node: FlatProjectNode = {
+        name: treeNode.parsed.name,
+        path: relPath,
+        parent: parentRelPath,
+        children: childRelPaths,
+        producesArtifacts: producesArtifacts(treeNode.parsed),
+        languages: ['python'],
+        buildTool: treeNode.parsed.buildTool,
+        buildFiles: treeNode.parsed.buildFiles,
+        dependencies: internalDeps,
+        config: { configFile: treeNode.parsed.configFile, type: 'python' },
+    };
+
+    const descendantNodes: FlatProjectNode[] = [];
+    for (const child of treeNode.children) {
+        descendantNodes.push(...flattenTreeNode(child, relPath, repoRoot, allNameSet));
     }
 
-    function buildNode(parsed: ParsedProject): ProjectNode {
-        const relPath = path.relative(repoRoot, parsed.absDir) || '.';
-        const internalDeps = parsed.rawDependencies
+    return [node, ...descendantNodes];
+}
+
+function buildUvWorkspace(
+    rootParsed: ParsedProject,
+    allParsedByDir: Map<string, ParsedProject>,
+    repoRoot: string,
+    allNameSet: Set<string>
+): Workspace {
+    const rootRelPath = path.relative(repoRoot, rootParsed.absDir) || '.';
+    const memberAbsDirs = resolveUvWorkspaceMembers(rootParsed.absDir, rootParsed.uvWorkspaceMembers);
+    const memberAbsDirsFiltered = memberAbsDirs.filter((d) => d !== rootParsed.absDir);
+
+    const childRelPaths = memberAbsDirsFiltered.map(
+        (d) => path.relative(repoRoot, d) || '.'
+    );
+
+    const rootInternalDeps = rootParsed.rawDependencies
+        .map((d) => normalizeName(d))
+        .filter((d) => allNameSet.has(d));
+
+    const rootNode: FlatProjectNode = {
+        name: rootParsed.name,
+        path: rootRelPath,
+        parent: null,
+        children: childRelPaths,
+        producesArtifacts: producesArtifacts(rootParsed),
+        languages: ['python'],
+        buildTool: rootParsed.buildTool,
+        buildFiles: rootParsed.buildFiles,
+        dependencies: rootInternalDeps,
+        config: { configFile: rootParsed.configFile, type: 'python' },
+    };
+
+    const memberNodes: FlatProjectNode[] = [];
+    for (const memberDir of memberAbsDirsFiltered) {
+        const memberParsed = allParsedByDir.get(memberDir);
+        if (!memberParsed) continue;
+
+        const memberRelPath = path.relative(repoRoot, memberDir) || '.';
+        const memberInternalDeps = memberParsed.rawDependencies
             .map((d) => normalizeName(d))
             .filter((d) => allNameSet.has(d));
 
-        const children = childrenMap.get(parsed.absDir) ?? [];
-        const childNodes = children.map((c) => buildNode(c));
-
-        const node: ProjectNode = {
-            name: parsed.name,
-            path: relPath,
+        memberNodes.push({
+            name: memberParsed.name,
+            path: memberRelPath,
+            parent: rootRelPath,
+            children: [],
+            producesArtifacts: producesArtifacts(memberParsed),
             languages: ['python'],
-            buildTool: parsed.buildTool,
-            buildFiles: parsed.buildFiles,
-            config: { configFile: parsed.configFile, type: 'python' },
-        };
-
-        if (internalDeps.length > 0) {
-            node.dependencies = internalDeps;
-        }
-
-        if (childNodes.length > 0) {
-            node.subProjects = childNodes;
-        }
-
-        return node;
+            buildTool: memberParsed.buildTool,
+            buildFiles: memberParsed.buildFiles,
+            dependencies: memberInternalDeps,
+            config: { configFile: memberParsed.configFile, type: 'python' },
+        });
     }
 
-    const topLevel = sortedByDepth.filter((p) => !subProjectDirs.has(p.absDir));
-    return topLevel.map((p) => buildNode(p));
+    const projects = [rootNode, ...memberNodes];
+
+    return {
+        root: rootRelPath,
+        type: deriveWorkspaceType(rootParsed, memberAbsDirsFiltered.length > 0),
+        projects,
+    };
 }
 
 const PYTHON_AST_SCRIPT = `
@@ -555,34 +609,15 @@ function resolveImportedSiblings(projectDir: string, siblingNames: string[]): st
         .filter((name): name is string => name !== undefined);
 }
 
-function resolveUvMemberSiblingDeps(node: ProjectNode, siblingNames: string[], projectAbsDir: string): void {
-    const existingDeps = new Set(node.dependencies ?? []);
-    const undeclaredSiblings = siblingNames.filter(
-        (s) => s !== node.name && !existingDeps.has(s)
-    );
-
-    if (undeclaredSiblings.length === 0) {
+function postProcessUvWorkspace(workspace: Workspace, allParsedByDir: Map<string, ParsedProject>, repoRoot: string): void {
+    const members = workspace.projects.filter((p) => p.parent !== null);
+    if (members.length === 0) {
         return;
     }
 
-    const discovered = resolveImportedSiblings(projectAbsDir, undeclaredSiblings);
-    if (discovered.length === 0) {
-        return;
-    }
+    const allWorkspaceNames = workspace.projects.map((p) => p.name);
 
-    const merged = Array.from(new Set([...existingDeps, ...discovered])).sort();
-    node.dependencies = merged;
-}
-
-function postProcessUvWorkspaceNodes(workspaceNode: ProjectNode, allParsedByDir: Map<string, ParsedProject>, repoRoot: string): void {
-    const subProjects = workspaceNode.subProjects;
-    if (!subProjects || subProjects.length === 0) {
-        return;
-    }
-
-    const allWorkspaceNames = [workspaceNode.name, ...subProjects.map((s) => s.name)];
-
-    for (const member of subProjects) {
+    for (const member of members) {
         const memberAbsDir = path.resolve(repoRoot, member.path);
         const memberParsed = allParsedByDir.get(memberAbsDir);
         if (!memberParsed) {
@@ -590,12 +625,19 @@ function postProcessUvWorkspaceNodes(workspaceNode: ProjectNode, allParsedByDir:
         }
 
         const siblingNames = allWorkspaceNames.filter((n) => n !== member.name);
-        const declaredSiblingDeps = (member.dependencies ?? []).filter((d) => siblingNames.includes(d));
-        if (declaredSiblingDeps.length === siblingNames.length) {
+        const existingDeps = new Set(member.dependencies);
+        const undeclaredSiblings = siblingNames.filter((s) => !existingDeps.has(s));
+
+        if (undeclaredSiblings.length === 0) {
             continue;
         }
 
-        resolveUvMemberSiblingDeps(member, siblingNames, memberParsed.absDir);
+        const discovered = resolveImportedSiblings(memberParsed.absDir, undeclaredSiblings);
+        if (discovered.length === 0) {
+            continue;
+        }
+
+        member.dependencies = Array.from(new Set([...existingDeps, ...discovered])).sort();
     }
 }
 
@@ -626,7 +668,7 @@ export function detect(cwd: string): DetectOutput {
     const allParsed = [...parsedPyprojects, ...parsedSetupFiles, ...parsedRequirements, ...parsedPipfiles];
 
     if (allParsed.length === 0) {
-        return { tool: 'python', projects: [] };
+        return { tool: 'python', workspaces: [] };
     }
 
     const allParsedByDir = new Map<string, ParsedProject>();
@@ -636,83 +678,44 @@ export function detect(cwd: string): DetectOutput {
 
     const allNameSet = new Set(allParsed.map((p) => normalizeName(p.name)));
 
-    const hasWorkspaceRoot = allParsed.some((p) => p.isUvWorkspaceRoot);
-
-    let topLevelNodes: ProjectNode[];
-
-    if (hasWorkspaceRoot) {
-        const subProjectDirs = new Set<string>();
-        const workspaceRoots = allParsed.filter((p) => p.isUvWorkspaceRoot);
-
-        for (const root of workspaceRoots) {
-            const memberDirs = resolveUvWorkspaceMembers(root.absDir, root.uvWorkspaceMembers);
-            for (const memberDir of memberDirs) {
-                if (memberDir !== root.absDir) {
-                    subProjectDirs.add(memberDir);
-                }
-            }
-        }
-
-        const nonWorkspaceTopLevel = allParsed.filter(
-            (p) => !p.isUvWorkspaceRoot && !subProjectDirs.has(p.absDir)
-        );
-
-        const workspaceNodes = workspaceRoots.map((root) => {
-            const memberDirs = resolveUvWorkspaceMembers(root.absDir, root.uvWorkspaceMembers);
-            const memberNodes: ProjectNode[] = [];
-            for (const memberDir of memberDirs) {
-                const memberParsed = allParsedByDir.get(memberDir);
-                if (memberParsed && memberDir !== root.absDir) {
-                    memberNodes.push(buildProjectNode(memberParsed, repoRoot, allParsedByDir, allNameSet, new Set()));
-                }
-            }
-
-            const relPath = path.relative(repoRoot, root.absDir) || '.';
-            const internalDeps = root.rawDependencies
-                .map((d) => normalizeName(d))
-                .filter((d) => allNameSet.has(d));
-
-            const node: ProjectNode = {
-                name: root.name,
-                path: relPath,
-                languages: ['python'],
-                buildTool: root.buildTool,
-                buildFiles: root.buildFiles,
-                config: { configFile: root.configFile, type: 'python' },
-            };
-
-            if (internalDeps.length > 0) {
-                node.dependencies = internalDeps;
-            }
-
-            if (memberNodes.length > 0) {
-                node.subProjects = memberNodes;
-            }
-
-            return node;
-        });
-
-        const nonWorkspaceNodes = buildNonWorkspaceTree(
-            nonWorkspaceTopLevel,
-            repoRoot,
-            allNameSet,
-            allParsedByDir
-        );
-
-        topLevelNodes = [...workspaceNodes, ...nonWorkspaceNodes];
-    } else {
-        topLevelNodes = buildNonWorkspaceTree(allParsed, repoRoot, allNameSet, allParsedByDir);
-    }
-
-    if (hasWorkspaceRoot) {
-        for (const node of topLevelNodes) {
-            if (node.subProjects && node.subProjects.length > 0) {
-                postProcessUvWorkspaceNodes(node, allParsedByDir, repoRoot);
+    const uvWorkspaceRoots = allParsed.filter((p) => p.isUvWorkspaceRoot);
+    const uvMemberDirs = new Set<string>();
+    for (const root of uvWorkspaceRoots) {
+        const memberDirs = resolveUvWorkspaceMembers(root.absDir, root.uvWorkspaceMembers);
+        for (const d of memberDirs) {
+            if (d !== root.absDir) {
+                uvMemberDirs.add(d);
             }
         }
     }
 
-    return { tool: 'python', projects: topLevelNodes };
+    const workspaces: Workspace[] = [];
+
+    for (const root of uvWorkspaceRoots) {
+        const ws = buildUvWorkspace(root, allParsedByDir, repoRoot, allNameSet);
+        postProcessUvWorkspace(ws, allParsedByDir, repoRoot);
+        workspaces.push(ws);
+    }
+
+    const nonUvParsed = allParsed.filter(
+        (p) => !p.isUvWorkspaceRoot && !uvMemberDirs.has(p.absDir)
+    );
+
+    if (nonUvParsed.length > 0) {
+        const forest = buildForest(nonUvParsed, repoRoot);
+        for (const treeRoot of forest) {
+            const projects = flattenTreeNode(treeRoot, null, repoRoot, allNameSet);
+            const rootParsed = treeRoot.parsed;
+            const hasChildren = treeRoot.children.length > 0;
+            workspaces.push({
+                root: projects[0].path,
+                type: deriveWorkspaceType(rootParsed, hasChildren),
+                projects,
+            });
+        }
+    }
+
+    return { tool: 'python', workspaces };
 }
 
 export function detectAction(options: DetectOptions): void {

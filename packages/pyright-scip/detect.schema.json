@@ -1,29 +1,69 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://kernoio.github.io/scip-detect/v1",
+  "$id": "https://kernoio.github.io/scip-detect/v2",
   "title": "SCIP Detect Output",
   "description": "Universal project detection schema for scip-* tools. Describes the project topology of a repository.",
   "type": "object",
-  "required": ["projects"],
+  "required": ["tool", "workspaces"],
   "properties": {
-    "projects": {
+    "tool": {
+      "type": "string",
+      "description": "The language or ecosystem (e.g. python, node, java)."
+    },
+    "workspaces": {
       "type": "array",
       "default": [],
-      "items": { "$ref": "#/$defs/ProjectNode" }
+      "items": { "$ref": "#/$defs/Workspace" }
     }
   },
   "$defs": {
-    "ProjectNode": {
+    "Workspace": {
       "type": "object",
-      "required": ["name", "path"],
+      "required": ["root", "type", "projects"],
+      "properties": {
+        "root": {
+          "type": "string",
+          "description": "Path to the workspace root, relative to the repository root. '.' for the repository root itself."
+        },
+        "type": {
+          "type": "string",
+          "description": "Workspace type: 'uv' for uv workspaces, 'poetry' for poetry monorepos with children, 'standalone' for single projects."
+        },
+        "projects": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/FlatProjectNode" },
+          "description": "Flat list of all projects in this workspace, including the root and all descendants."
+        }
+      }
+    },
+    "FlatProjectNode": {
+      "type": "object",
+      "required": ["name", "path", "parent", "children", "producesArtifacts", "languages", "buildTool", "buildFiles", "dependencies", "config"],
       "properties": {
         "name": {
           "type": "string",
-          "description": "Package or project name (e.g. @heyputer/backend, :app)"
+          "description": "Package or project name (e.g. my-lib, my-app)."
         },
         "path": {
           "type": "string",
           "description": "Path relative to the repository root. '.' for the root project itself."
+        },
+        "parent": {
+          "oneOf": [
+            { "type": "string" },
+            { "type": "null" }
+          ],
+          "description": "Path of the parent project, or null if this is a workspace root."
+        },
+        "children": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Paths of direct child projects."
+        },
+        "producesArtifacts": {
+          "type": "boolean",
+          "description": "Whether this project produces installable artifacts. False only for uv workspace containers with no [project] or [tool.poetry] section."
         },
         "languages": {
           "type": "array",
@@ -33,30 +73,24 @@
         },
         "buildTool": {
           "type": "string",
-          "description": "Build tool or package manager (npm, pnpm, yarn, gradle, maven, cargo, pip, etc.).",
+          "description": "Build tool or package manager (pip, uv, poetry, hatchling, setuptools, pipenv, etc.).",
           "default": "unknown"
         },
-        "config": {
-          "$ref": "#/$defs/ProjectConfig",
-          "description": "Build/compiler configuration detected for this project. Null or absent if none found."
+        "buildFiles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": [],
+          "description": "Build-related files present for this project (e.g. pyproject.toml, uv.lock, requirements.txt)."
         },
         "dependencies": {
           "type": "array",
           "items": { "type": "string" },
           "default": [],
-          "description": "Names of sibling or cousin ProjectNodes that this project depends on."
+          "description": "Paths of sibling projects that this project depends on."
         },
-        "subProjects": {
-          "type": "array",
-          "items": { "$ref": "#/$defs/ProjectNode" },
-          "default": [],
-          "description": "Child projects (workspace packages, Gradle subprojects, etc.)."
-        },
-        "includedBuilds": {
-          "type": "array",
-          "items": { "type": "string" },
-          "default": [],
-          "description": "Paths to other project roots included as composite/included builds (Gradle). Absent or empty for tools that don't support this."
+        "config": {
+          "$ref": "#/$defs/ProjectConfig",
+          "description": "Build/compiler configuration detected for this project."
         }
       }
     },
@@ -65,11 +99,15 @@
       "properties": {
         "configFile": {
           "type": "string",
-          "description": "Path to the config file, relative to this ProjectNode's path."
+          "description": "Path to the config file, relative to this project's path."
+        },
+        "type": {
+          "type": "string",
+          "description": "Config type (e.g. python)."
         }
       },
       "additionalProperties": true,
-      "description": "Tool-specific configuration. Always has configFile; additional properties vary by tool (e.g. allowJs for TypeScript, sourceCompatibility for Gradle)."
+      "description": "Tool-specific configuration."
     }
   }
 }
