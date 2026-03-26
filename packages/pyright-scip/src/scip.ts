@@ -24,6 +24,7 @@ export namespace scip {
         Generated = 16,
         Test = 32,
         ForwardDefinition = 64,
+        External = 128,
     }
     export enum SyntaxKind {
         UnspecifiedSyntaxKind = 0,

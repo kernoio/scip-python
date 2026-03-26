@@ -158,6 +158,8 @@ export class TreeVisitor extends ParseTreeWalker {
     public externalSymbols: Map<string, scip.SymbolInformation>;
 
     private _docstringWriter: TypeStubExtendedWriter;
+    private _currentImportIsExternal: boolean = false;
+    private _currentExternalModuleSymbol: ScipSymbol | undefined = undefined;
 
     private cwd: string;
     private projectPackage: PythonPackage;
@@ -429,25 +431,47 @@ export class TreeVisitor extends ParseTreeWalker {
     // and then declare the new symbol for the entire module. This gives us better
     // clicking for goto-def in Sourcegraph
     override visitImportFrom(node: ImportFromNode): boolean {
-        const symbol = this.getScipSymbol(node);
+        const moduleName = _formatModuleName(node.d.module);
+        const symbolPackage = this.moduleNameNodeToPythonPackage(node.d.module);
+        const isExternal = !symbolPackage;
+
+        let symbol: ScipSymbol;
+        if (isExternal) {
+            const topLevel = moduleName.split('.')[0];
+            const externalPackage = new PythonPackage(topLevel, '', []);
+            symbol = Symbols.makeModuleInit(externalPackage, moduleName);
+        } else {
+            symbol = this.getScipSymbol(node);
+        }
+
+        const externalFlag = isExternal ? scip.SymbolRole.External : 0;
         this.document.occurrences.push(
             new scip.Occurrence({
-                symbol_roles: scip.SymbolRole.ReadAccess,
+                symbol_roles: scip.SymbolRole.ReadAccess | externalFlag,
                 symbol: symbol.value,
                 range: parseNodeToRange(node.d.module, this.fileInfo!.lines).toLsif(),
             })
         );
-        const symbolPackage = this.moduleNameNodeToPythonPackage(node.d.module);
-        if (!symbolPackage) {
+
+        if (isExternal) {
             this.emitExternalSymbolInformation(node.d.module, symbol, []);
         }
 
+        this._currentImportIsExternal = isExternal;
+        this._currentExternalModuleSymbol = isExternal ? symbol : undefined;
         node.d.imports.forEach((imp) => this.walk(imp));
+        this._currentImportIsExternal = false;
+        this._currentExternalModuleSymbol = undefined;
         return false;
     }
 
     override visitImportFromAs(node: ImportFromAsNode): boolean {
-        this.pushNewOccurrence(node, this.getScipSymbol(node));
+        let symbol = this.getScipSymbol(node);
+        if (this._currentImportIsExternal && symbol.isLocal() && this._currentExternalModuleSymbol) {
+            symbol = Symbols.makeTerm(this._currentExternalModuleSymbol, node.d.name.d.value);
+        }
+        const role = scip.SymbolRole.ReadAccess | (this._currentImportIsExternal ? scip.SymbolRole.External : 0);
+        this.pushNewOccurrence(node, symbol, role);
         return false;
     }
 
@@ -458,6 +482,9 @@ export class TreeVisitor extends ParseTreeWalker {
         const moduleName = _formatModuleName(node.d.module);
         const importInfo = getImportInfo(node.d.module);
 
+        let moduleSymbol: ScipSymbol;
+        let isExternal: boolean;
+
         if (
             importInfo &&
             importInfo.resolvedUris[0] &&
@@ -467,38 +494,32 @@ export class TreeVisitor extends ParseTreeWalker {
                 return resolvedPath.startsWith(this.cwd);
             })()
         ) {
-            const symbol = this.safeModuleInit(this.projectPackage, moduleName);
-
-            this.pushNewOccurrence(node.d.module, symbol);
+            moduleSymbol = this.safeModuleInit(this.projectPackage, moduleName);
+            isExternal = false;
         } else {
+            isExternal = true;
             const pythonPackage = this.moduleNameNodeToPythonPackage(node.d.module);
             if (pythonPackage) {
-                const symbol = this.safeModuleInit(pythonPackage, moduleName);
-                this.pushNewOccurrence(node.d.module, symbol);
+                moduleSymbol = this.safeModuleInit(pythonPackage, moduleName);
             } else {
-                // For python packages & modules that we cannot resolve,
-                // we'll just make a local for the file and note that we could not resolve this module.
-                //
-                // This should be pretty helpful when debugging (and for giving users feedback when they are
-                // interacting with sourcegraph).
-                //
-                // TODO: The only other question would be what we should do about references to items from this module
-                const symbol = this.getLocalForDeclaration(node, [
-                    `(module): ${moduleName} [unable to resolve module]`,
-                ]);
-                this.pushNewOccurrence(node.d.module, symbol);
+                const topLevel = moduleName.split('.')[0];
+                const fallbackPackage = new PythonPackage(topLevel, '', []);
+                moduleSymbol = Symbols.makeModuleInit(fallbackPackage, moduleName);
             }
         }
 
+        const externalFlag = isExternal ? scip.SymbolRole.External : 0;
+        this.pushNewOccurrence(node.d.module, moduleSymbol, scip.SymbolRole.ReadAccess | externalFlag);
+
         if (node.d.alias) {
-            const importTopLevel = moduleName.split('.')[0];
-            if (this.config.projectModulePrefixes.has(importTopLevel)) {
+            if (!isExternal) {
                 const pkg = this.moduleNameNodeToPythonPackage(node.d.module) || this.projectPackage;
-                const symbol = this.safeModuleInit(pkg, moduleName);
-                this.rawSetLsifSymbol(node.d.alias, symbol, true);
-                this.pushNewOccurrence(node.d.alias, symbol);
+                const aliasSymbol = this.safeModuleInit(pkg, moduleName);
+                this.rawSetLsifSymbol(node.d.alias, aliasSymbol, true);
+                this.pushNewOccurrence(node.d.alias, aliasSymbol);
             } else {
-                this.pushNewOccurrence(node.d.alias, this.getLocalForDeclaration(node.d.alias));
+                this.rawSetLsifSymbol(node.d.alias, moduleSymbol, true);
+                this.pushNewOccurrence(node.d.alias, moduleSymbol, scip.SymbolRole.ReadAccess | externalFlag);
             }
         }
 
@@ -924,16 +945,10 @@ export class TreeVisitor extends ParseTreeWalker {
     }
 
     private safeModuleInit(pythonPackage: PythonPackage, moduleName: string): ScipSymbol {
-        if (!this.isProjectModule(moduleName)) {
-            return ScipSymbol.local(this.counter.next());
-        }
         return Symbols.makeModuleInit(pythonPackage, moduleName);
     }
 
     private safeModule(pythonPackage: PythonPackage, moduleName: string): ScipSymbol {
-        if (!this.isProjectModule(moduleName)) {
-            return ScipSymbol.local(this.counter.next());
-        }
         return Symbols.makeModule(pythonPackage, moduleName);
     }
 

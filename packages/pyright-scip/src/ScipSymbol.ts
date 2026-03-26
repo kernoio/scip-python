@@ -6,8 +6,8 @@ export class ScipSymbol extends TypescriptScipSymbol {
         super(value);
     }
 
-    public static override package(_name: string, _version: string): TypescriptScipSymbol {
-        return TypescriptScipSymbol.empty();
+    public static override package(name: string, _version: string): TypescriptScipSymbol {
+        return new ScipSymbol(`${name} `);
     }
 }
 
