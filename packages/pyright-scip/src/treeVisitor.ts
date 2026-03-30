@@ -469,6 +469,7 @@ export class TreeVisitor extends ParseTreeWalker {
         let symbol = this.getScipSymbol(node);
         if (this._currentImportIsExternal && symbol.isLocal() && this._currentExternalModuleSymbol) {
             symbol = Symbols.makeTerm(this._currentExternalModuleSymbol, node.d.name.d.value);
+            this.rawSetLsifSymbol(node, symbol, false);
         }
         const role = scip.SymbolRole.ReadAccess | (this._currentImportIsExternal ? scip.SymbolRole.External : 0);
         this.pushNewOccurrence(node, symbol, role);
