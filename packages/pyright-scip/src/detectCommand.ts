@@ -21,6 +21,7 @@ export interface FlatProjectNode {
     buildFiles: string[];
     dependencies: string[];
     config: ProjectConfig;
+    imports?: Record<string, Record<string, number>>;
 }
 
 export interface Workspace {
@@ -609,35 +610,228 @@ function resolveImportedSiblings(projectDir: string, siblingNames: string[]): st
         .filter((name): name is string => name !== undefined);
 }
 
-function postProcessUvWorkspace(workspace: Workspace, allParsedByDir: Map<string, ParsedProject>, repoRoot: string): void {
-    const members = workspace.projects.filter((p) => p.parent !== null);
-    if (members.length === 0) {
-        return;
+const PYTHON_HEATMAP_SCRIPT = `
+import ast, os, json, sys
+
+def get_imports(filepath):
+    try:
+        with open(filepath) as f:
+            full_text = f.read()
+    except:
+        return []
+    text = full_text
+    last_import = -1
+    first_def_after = -1
+    for i, line in enumerate(full_text.splitlines()):
+        if line.startswith('import ') or line.startswith('from '):
+            last_import = i
+            first_def_after = -1
+        elif first_def_after == -1 and (line.startswith('def ') or line.startswith('class ')):
+            first_def_after = i
+    if first_def_after > last_import and last_import >= 0:
+        lines = full_text.splitlines(True)
+        text = ''.join(lines[:first_def_after])
+    try:
+        tree = ast.parse(text)
+    except:
+        try:
+            tree = ast.parse(full_text)
+        except:
+            return []
+    imports = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.append(alias.name.split('.')[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.module and node.level == 0:
+                imports.append(node.module.split('.')[0])
+    return imports
+
+repo_root = sys.argv[1]
+
+skip_dirs = {'tests', 'test', 'testing', '__tests__', 'fixtures', '__pycache__', '.git', 'node_modules', '.venv', 'venv', '.tox', '.mypy_cache', '.pytest_cache', 'build', 'dist', '.eggs'}
+
+result = {}
+for root, dirs, files in os.walk(repo_root):
+    dirs[:] = [d for d in dirs if d not in skip_dirs and not d.endswith('.egg-info')]
+    for f in files:
+        if not f.endswith('.py'):
+            continue
+        if f.startswith('test_') or f.endswith('_test.py') or f == 'conftest.py':
+            continue
+        filepath = os.path.join(root, f)
+        imports = get_imports(filepath)
+        rel_dir = os.path.relpath(root, repo_root)
+        for mod in imports:
+            if rel_dir not in result:
+                result[rel_dir] = {}
+            result[rel_dir][mod] = result[rel_dir].get(mod, 0) + 1
+
+print(json.dumps(result))
+`.trim();
+
+const PACKAGE_WALK_SKIP_DIRS = new Set([
+    '.venv', 'venv', 'node_modules', '__pycache__', '.git',
+    'dist', 'build', '.tox', '.eggs', '.mypy_cache', '.pytest_cache',
+]);
+
+function safeReadDir(dir: string): fs.Dirent[] {
+    try {
+        return fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+        return [];
+    }
+}
+
+function hasInitPy(entries: fs.Dirent[]): boolean {
+    return entries.some((e) => e.isFile() && e.name === '__init__.py');
+}
+
+function findInternalImportableNames(repoRoot: string): Set<string> {
+    const result = new Set<string>();
+    const rootEntries = safeReadDir(repoRoot);
+    const rootIsPackage = hasInitPy(rootEntries);
+
+    for (const entry of rootEntries) {
+        if (!entry.isDirectory()) continue;
+        if (PACKAGE_WALK_SKIP_DIRS.has(entry.name) || entry.name.endsWith('.egg-info')) continue;
+        collectTopLevelPackages(path.join(repoRoot, entry.name), rootIsPackage, result);
     }
 
+    return result;
+}
+
+function collectTopLevelPackages(dir: string, parentIsPackage: boolean, result: Set<string>): void {
+    const entries = safeReadDir(dir);
+    if (entries.length === 0) return;
+
+    const isPackage = hasInitPy(entries);
+    if (isPackage && !parentIsPackage) {
+        result.add(path.basename(dir));
+    }
+
+    for (const entry of entries) {
+        if (!entry.isDirectory()) continue;
+        if (PACKAGE_WALK_SKIP_DIRS.has(entry.name) || entry.name.endsWith('.egg-info')) continue;
+        collectTopLevelPackages(path.join(dir, entry.name), isPackage, result);
+    }
+}
+
+function scanRepoImportHeatmap(repoRoot: string): Record<string, Record<string, number>> {
+    let result: childProcess.SpawnSyncReturns<Buffer>;
+    try {
+        result = childProcess.spawnSync(
+            'python3',
+            ['-c', PYTHON_HEATMAP_SCRIPT, repoRoot],
+            { encoding: 'buffer', timeout: 120000 }
+        );
+    } catch {
+        return {};
+    }
+
+    if (result.status !== 0 || !result.stdout) {
+        return {};
+    }
+
+    try {
+        return JSON.parse(result.stdout.toString('utf-8').trim());
+    } catch {
+        return {};
+    }
+}
+
+function dirBelongsToProject(repoRelDir: string, projectPath: string): boolean {
+    if (projectPath === '.') return true;
+    const normalizedDir = repoRelDir.replace(/\\/g, '/');
+    const projectPrefix = projectPath.replace(/\\/g, '/');
+    return normalizedDir === projectPrefix || normalizedDir.startsWith(projectPrefix + '/');
+}
+
+function toProjectRelativeDir(repoRelDir: string, projectPath: string): string {
+    const normalizedDir = repoRelDir.replace(/\\/g, '/');
+    if (projectPath === '.') return normalizedDir;
+    const projectPrefix = projectPath.replace(/\\/g, '/');
+    if (normalizedDir === projectPrefix) return '.';
+    return normalizedDir.slice(projectPrefix.length + 1);
+}
+
+function collectProjectImportModules(
+    projectPath: string,
+    repoImportMap: Record<string, Record<string, number>>,
+): Set<string> {
+    const imports = new Set<string>();
+    for (const [repoRelDir, modCounts] of Object.entries(repoImportMap)) {
+        if (!dirBelongsToProject(repoRelDir, projectPath)) continue;
+        for (const mod of Object.keys(modCounts)) {
+            imports.add(mod);
+        }
+    }
+    return imports;
+}
+
+function filterImportsForProject(
+    projectPath: string,
+    repoImportMap: Record<string, Record<string, number>>,
+    internalNames: Set<string>,
+): Record<string, Record<string, number>> {
+    const result: Record<string, Record<string, number>> = {};
+    for (const [repoRelDir, modCounts] of Object.entries(repoImportMap)) {
+        if (!dirBelongsToProject(repoRelDir, projectPath)) continue;
+        const projectRelDir = toProjectRelativeDir(repoRelDir, projectPath);
+        const filtered: Record<string, number> = {};
+        for (const [mod, count] of Object.entries(modCounts)) {
+            if (!internalNames.has(mod)) {
+                filtered[mod] = count;
+            }
+        }
+        if (Object.keys(filtered).length > 0) {
+            result[projectRelDir] = filtered;
+        }
+    }
+    return result;
+}
+
+function discoverUndeclaredSiblingDeps(
+    member: FlatProjectNode,
+    allWorkspaceNames: string[],
+    normalizedToOriginal: Map<string, string>,
+    repoImportMap: Record<string, Record<string, number>>,
+): void {
+    const existingDeps = new Set(member.dependencies);
+    const undeclaredSiblings = allWorkspaceNames.filter((n) => n !== member.name && !existingDeps.has(n));
+    if (undeclaredSiblings.length === 0) return;
+
+    const normalizedUndeclared = new Set(undeclaredSiblings.map((s) => s.replace(/-/g, '_')));
+    const projectImports = collectProjectImportModules(member.path, repoImportMap);
+
+    const discovered: string[] = [];
+    for (const mod of projectImports) {
+        if (!normalizedUndeclared.has(mod)) continue;
+        const original = normalizedToOriginal.get(mod);
+        if (original) discovered.push(original);
+    }
+
+    if (discovered.length === 0) return;
+    member.dependencies = Array.from(new Set([...existingDeps, ...discovered])).sort();
+}
+
+function postProcessUvWorkspace(
+    workspace: Workspace,
+    repoRoot: string,
+    repoImportMap: Record<string, Record<string, number>>
+): void {
+    const members = workspace.projects.filter((p) => p.parent !== null);
+    if (members.length === 0) return;
+
     const allWorkspaceNames = workspace.projects.map((p) => p.name);
+    const normalizedToOriginal = new Map<string, string>();
+    for (const name of allWorkspaceNames) {
+        normalizedToOriginal.set(name.replace(/-/g, '_'), name);
+    }
 
     for (const member of members) {
-        const memberAbsDir = path.resolve(repoRoot, member.path);
-        const memberParsed = allParsedByDir.get(memberAbsDir);
-        if (!memberParsed) {
-            continue;
-        }
-
-        const siblingNames = allWorkspaceNames.filter((n) => n !== member.name);
-        const existingDeps = new Set(member.dependencies);
-        const undeclaredSiblings = siblingNames.filter((s) => !existingDeps.has(s));
-
-        if (undeclaredSiblings.length === 0) {
-            continue;
-        }
-
-        const discovered = resolveImportedSiblings(memberParsed.absDir, undeclaredSiblings);
-        if (discovered.length === 0) {
-            continue;
-        }
-
-        member.dependencies = Array.from(new Set([...existingDeps, ...discovered])).sort();
+        discoverUndeclaredSiblingDeps(member, allWorkspaceNames, normalizedToOriginal, repoImportMap);
     }
 }
 
@@ -690,10 +884,11 @@ export function detect(cwd: string): DetectOutput {
     }
 
     const workspaces: Workspace[] = [];
+    const repoImportMap = scanRepoImportHeatmap(repoRoot);
 
     for (const root of uvWorkspaceRoots) {
         const ws = buildUvWorkspace(root, allParsedByDir, repoRoot, allNameSet);
-        postProcessUvWorkspace(ws, allParsedByDir, repoRoot);
+        postProcessUvWorkspace(ws, repoRoot, repoImportMap);
         workspaces.push(ws);
     }
 
@@ -712,6 +907,13 @@ export function detect(cwd: string): DetectOutput {
                 type: deriveWorkspaceType(rootParsed, hasChildren),
                 projects,
             });
+        }
+    }
+
+    const internalNames = findInternalImportableNames(repoRoot);
+    for (const workspace of workspaces) {
+        for (const project of workspace.projects) {
+            project.imports = filterImportsForProject(project.path, repoImportMap, internalNames);
         }
     }
 
