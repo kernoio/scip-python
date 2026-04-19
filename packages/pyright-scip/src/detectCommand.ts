@@ -21,7 +21,7 @@ export interface FlatProjectNode {
     buildFiles: string[];
     dependencies: string[];
     config: ProjectConfig;
-    imports?: Record<string, Record<string, number>>;
+    imports?: Record<string, Record<string, Record<string, number>>>;
 }
 
 export interface Workspace {
@@ -642,10 +642,12 @@ def get_imports(filepath):
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for alias in node.names:
-                imports.append(alias.name.split('.')[0])
+                imports.append((alias.name.split('.')[0], '*'))
         elif isinstance(node, ast.ImportFrom):
             if node.module and node.level == 0:
-                imports.append(node.module.split('.')[0])
+                mod = node.module.split('.')[0]
+                for alias in node.names:
+                    imports.append((mod, alias.name))
     return imports
 
 repo_root = sys.argv[1]
@@ -663,10 +665,12 @@ for root, dirs, files in os.walk(repo_root):
         filepath = os.path.join(root, f)
         imports = get_imports(filepath)
         rel_dir = os.path.relpath(root, repo_root)
-        for mod in imports:
+        for mod, specifier in imports:
             if rel_dir not in result:
                 result[rel_dir] = {}
-            result[rel_dir][mod] = result[rel_dir].get(mod, 0) + 1
+            if mod not in result[rel_dir]:
+                result[rel_dir][mod] = {}
+            result[rel_dir][mod][specifier] = result[rel_dir][mod].get(specifier, 0) + 1
 
 print(json.dumps(result))
 `.trim();
@@ -718,7 +722,7 @@ function collectTopLevelPackages(dir: string, parentIsPackage: boolean, result: 
     }
 }
 
-function scanRepoImportHeatmap(repoRoot: string): Record<string, Record<string, number>> {
+function scanRepoImportHeatmap(repoRoot: string): Record<string, Record<string, Record<string, number>>> {
     let result: childProcess.SpawnSyncReturns<Buffer>;
     try {
         result = childProcess.spawnSync(
@@ -758,7 +762,7 @@ function toProjectRelativeDir(repoRelDir: string, projectPath: string): string {
 
 function collectProjectImportModules(
     projectPath: string,
-    repoImportMap: Record<string, Record<string, number>>,
+    repoImportMap: Record<string, Record<string, Record<string, number>>>,
 ): Set<string> {
     const imports = new Set<string>();
     for (const [repoRelDir, modCounts] of Object.entries(repoImportMap)) {
@@ -772,17 +776,17 @@ function collectProjectImportModules(
 
 function filterImportsForProject(
     projectPath: string,
-    repoImportMap: Record<string, Record<string, number>>,
+    repoImportMap: Record<string, Record<string, Record<string, number>>>,
     internalNames: Set<string>,
-): Record<string, Record<string, number>> {
-    const result: Record<string, Record<string, number>> = {};
-    for (const [repoRelDir, modCounts] of Object.entries(repoImportMap)) {
+): Record<string, Record<string, Record<string, number>>> {
+    const result: Record<string, Record<string, Record<string, number>>> = {};
+    for (const [repoRelDir, modSpecifiers] of Object.entries(repoImportMap)) {
         if (!dirBelongsToProject(repoRelDir, projectPath)) continue;
         const projectRelDir = toProjectRelativeDir(repoRelDir, projectPath);
-        const filtered: Record<string, number> = {};
-        for (const [mod, count] of Object.entries(modCounts)) {
+        const filtered: Record<string, Record<string, number>> = {};
+        for (const [mod, specifiers] of Object.entries(modSpecifiers)) {
             if (!internalNames.has(mod)) {
-                filtered[mod] = count;
+                filtered[mod] = specifiers;
             }
         }
         if (Object.keys(filtered).length > 0) {
@@ -796,7 +800,7 @@ function discoverUndeclaredSiblingDeps(
     member: FlatProjectNode,
     allWorkspaceNames: string[],
     normalizedToOriginal: Map<string, string>,
-    repoImportMap: Record<string, Record<string, number>>,
+    repoImportMap: Record<string, Record<string, Record<string, number>>>,
 ): void {
     const existingDeps = new Set(member.dependencies);
     const undeclaredSiblings = allWorkspaceNames.filter((n) => n !== member.name && !existingDeps.has(n));
@@ -819,7 +823,7 @@ function discoverUndeclaredSiblingDeps(
 function postProcessUvWorkspace(
     workspace: Workspace,
     repoRoot: string,
-    repoImportMap: Record<string, Record<string, number>>
+    repoImportMap: Record<string, Record<string, Record<string, number>>>
 ): void {
     const members = workspace.projects.filter((p) => p.parent !== null);
     if (members.length === 0) return;
