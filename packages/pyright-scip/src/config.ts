@@ -1,4 +1,4 @@
-import TOML = require('@ltd/j-toml');
+import { parse as parseToml } from 'toml';
 import * as JSONC from 'jsonc-parser';
 import { findPythonSearchPaths, getTypeShedFallbackPath } from 'pyright-internal/analyzer/pythonPathUtils';
 import { ImportLogger } from 'pyright-internal/analyzer/importLogger';
@@ -398,7 +398,7 @@ export class ScipPyrightConfig {
     private _parsePyprojectTomlFile(pyprojectPath: Uri): object | undefined {
         return this._attemptParseFile(pyprojectPath, (fileContents, attemptCount) => {
             try {
-                const configObj = TOML.parse(fileContents, { joiner: '\n', bigint: false }) as unknown as Record<string, any>;
+                const configObj = parseToml(fileContents) as Record<string, any>;
                 if (configObj && configObj.tool && (configObj.tool as Record<string, any>).scip) {
                     return (configObj.tool as Record<string, any>).scip as object;
                 }

@@ -1,7 +1,7 @@
 import * as child_process from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
-import TOML = require('@ltd/j-toml');
+import { parse as parseToml } from 'toml';
 import { Event } from 'vscode-jsonrpc';
 
 import { Program } from 'pyright-internal/analyzer/program';
@@ -41,7 +41,7 @@ export class Indexer {
         try {
             const pyprojectTomlContents = getPyprojectTomlContents();
             if (pyprojectTomlContents) {
-                const tomlMap = TOML.parse(pyprojectTomlContents, { joiner: '\n', bigint: false }) as unknown as Record<string, any>;
+                const tomlMap = parseToml(pyprojectTomlContents) as Record<string, any>;
                 // See: https://packaging.python.org/en/latest/specifications/declaring-project-metadata/#specification
                 let project = tomlMap['project'] as Record<string, any> | undefined;
                 if (project) {
