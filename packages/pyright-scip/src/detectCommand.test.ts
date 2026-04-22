@@ -39,6 +39,33 @@ describe('detectCommand', () => {
             }
         });
 
+        test('logs error and skips project when pyproject.toml fails to parse, continuing with other projects', () => {
+            const dir = makeTempProject({
+                'good/pyproject.toml': [
+                    '[project]',
+                    'name = "good-project"',
+                    'version = "1.0"',
+                    '',
+                    '[build-system]',
+                    'requires = ["setuptools"]',
+                    'build-backend = "setuptools.build_meta"',
+                ].join('\n'),
+                'broken/pyproject.toml': 'this is { not [ valid ] = toml',
+            });
+            const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+            try {
+                const output = detect(dir);
+                const allProjects = output.workspaces.flatMap((w) => w.projects);
+                expect(allProjects).toHaveLength(1);
+                expect(allProjects[0].name).toBe('good-project');
+                const loggedMessages = errorSpy.mock.calls.map((c) => String(c[0]));
+                expect(loggedMessages.some((m) => m.includes('broken/pyproject.toml') && m.includes('failed to parse TOML'))).toBe(true);
+            } finally {
+                errorSpy.mockRestore();
+                fs.rmSync(dir, { recursive: true, force: true });
+            }
+        });
+
         test('detects project with PEP 735 heterogeneous dependency-groups', () => {
             const dir = makeTempProject({
                 'pyproject.toml': [

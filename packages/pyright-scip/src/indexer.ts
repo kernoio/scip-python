@@ -60,7 +60,10 @@ export class Indexer {
                     }
                 }
             }
-        } catch (_) {}
+        } catch (e) {
+            const message = e instanceof Error ? e.message : String(e);
+            console.error(`[scip-python index] failed to parse pyproject.toml for project metadata: ${message}`);
+        }
         name = typeof name === 'string' ? name : undefined;
         version = typeof version === 'string' ? version : undefined;
         if (!version && inferProjectVersionFromCommit) {
