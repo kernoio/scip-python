@@ -56,8 +56,8 @@ describe('detectCommand', () => {
             try {
                 const output = detect(dir);
                 const allProjects = output.workspaces.flatMap((w) => w.projects);
-                expect(allProjects.map((p) => p.name)).toContain('good-project');
-                expect(allProjects.map((p) => p.name)).not.toContain('broken');
+                expect(allProjects).toHaveLength(1);
+                expect(allProjects[0].name).toBe('good-project');
                 const loggedMessages = errorSpy.mock.calls.map((c) => String(c[0]));
                 expect(loggedMessages.some((m) => m.includes('broken/pyproject.toml') && m.includes('failed to parse TOML'))).toBe(true);
             } finally {
