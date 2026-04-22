@@ -48,12 +48,12 @@
         "webpack-cli": "^4.9.1"
     },
     "dependencies": {
-        "@iarna/toml": "^2.2.5",
         "command-exists": "^1.2.9",
         "commander": "^9.2.0",
         "diff": "^5.0.0",
         "glob": "^7.2.0",
         "google-protobuf": "^3.19.3",
+        "toml": "^4.1.1",
         "ts-node": "^10.5.0",
         "vscode-jsonrpc": "^9.0.0-next.8",
         "vscode-languageserver": "^10.0.0-next.13",

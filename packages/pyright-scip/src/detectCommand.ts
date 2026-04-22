@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as childProcess from 'child_process';
-import { parse as parseToml } from '@iarna/toml';
+import { parse as parseToml } from 'toml';
 import { glob } from 'glob';
 import { DetectOptions } from './MainCommand';
 
