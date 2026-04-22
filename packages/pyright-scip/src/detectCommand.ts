@@ -103,8 +103,10 @@ function readToml(filePath: string): Record<string, any> {
     try {
         const content = fs.readFileSync(filePath, 'utf-8');
         return parseToml(content) as Record<string, any>;
-    } catch {
-        return {};
+    } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        console.error(`[scip-python detect] failed to parse TOML at ${filePath}: ${message}`);
+        throw e;
     }
 }
 
@@ -851,10 +853,15 @@ export function detect(cwd: string): DetectOutput {
     const pyprojectDirs = new Set<string>();
 
     for (const tomlPath of pyprojectPaths) {
-        const parsed = parsePyprojectToml(tomlPath);
-        if (parsed) {
-            parsedPyprojects.push(parsed);
-            pyprojectDirs.add(parsed.absDir);
+        try {
+            const parsed = parsePyprojectToml(tomlPath);
+            if (parsed) {
+                parsedPyprojects.push(parsed);
+                pyprojectDirs.add(parsed.absDir);
+            }
+        } catch {
+            // readToml already logged the parse error; skip this file and continue
+            // so a single bad pyproject.toml doesn't kill detection for the whole repo.
         }
     }
 
