@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as childProcess from 'child_process';
-import { parse as parseToml } from '@iarna/toml';
+import TOML = require('@ltd/j-toml');
 import { glob } from 'glob';
 import { DetectOptions } from './MainCommand';
 
@@ -102,7 +102,7 @@ function findProjectMarkers(rootDir: string): string[] {
 function readToml(filePath: string): Record<string, any> {
     try {
         const content = fs.readFileSync(filePath, 'utf-8');
-        return parseToml(content) as Record<string, any>;
+        return TOML.parse(content, { joiner: '\n', bigint: false }) as unknown as Record<string, any>;
     } catch {
         return {};
     }

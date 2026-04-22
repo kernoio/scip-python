@@ -1,4 +1,4 @@
-import * as TOML from '@iarna/toml';
+import TOML = require('@ltd/j-toml');
 import * as JSONC from 'jsonc-parser';
 import { findPythonSearchPaths, getTypeShedFallbackPath } from 'pyright-internal/analyzer/pythonPathUtils';
 import { ImportLogger } from 'pyright-internal/analyzer/importLogger';
@@ -398,13 +398,13 @@ export class ScipPyrightConfig {
     private _parsePyprojectTomlFile(pyprojectPath: Uri): object | undefined {
         return this._attemptParseFile(pyprojectPath, (fileContents, attemptCount) => {
             try {
-                const configObj = TOML.parse(fileContents);
-                if (configObj && configObj.tool && (configObj.tool as TOML.JsonMap).scip) {
-                    return (configObj.tool as TOML.JsonMap).scip as object;
+                const configObj = TOML.parse(fileContents, { joiner: '\n', bigint: false }) as unknown as Record<string, any>;
+                if (configObj && configObj.tool && (configObj.tool as Record<string, any>).scip) {
+                    return (configObj.tool as Record<string, any>).scip as object;
                 }
 
-                if (configObj && configObj.tool && (configObj.tool as TOML.JsonMap).pyright) {
-                    return (configObj.tool as TOML.JsonMap).pyright as object;
+                if (configObj && configObj.tool && (configObj.tool as Record<string, any>).pyright) {
+                    return (configObj.tool as Record<string, any>).pyright as object;
                 }
             } catch (e: any) {
                 this._console.error(`Pyproject file parse attempt ${attemptCount} error: ${JSON.stringify(e)}`);
