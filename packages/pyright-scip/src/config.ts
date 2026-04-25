@@ -43,7 +43,7 @@ export class ScipPyrightConfig {
     getConfigOptions(): ConfigOptions {
         const host = new FullAccessHost(this._serviceProvider);
 
-        const options = new CommandLineOptions(process.cwd(), false);
+        const options = new CommandLineOptions(this._configOptions.projectRoot.getFilePath(), false);
 
         let config = this._getConfigOptions(host, options);
         config.checkOnlyOpenFiles = false;

@@ -62,6 +62,7 @@ export function mainCommand(
 
     command
         .command('index')
+        .argument('[path]', 'directory to index (defaults to current working directory)')
         .option(
             '--project-name <name>',
             'The name of the current project, pypi name if applicable. The default empty project name only supports repository-local code navigation in Sourcegraph.',
@@ -72,7 +73,6 @@ export function mainCommand(
             'The version of the current project. If not provided, defaults to the current git revision (if found).'
         )
         .option('--project-namespace <namespace>', 'A prefix to prepend to all module definitions in the current index')
-        .option('--cwd <path>', 'working directory for executing scip-python', process.cwd())
         .option('--target-only <path>', 'limit analysis to the following path')
         .option(
             '--output <path>',
@@ -88,7 +88,8 @@ export function mainCommand(
         )
         .option('--environment <json-file>', 'the environment json file (experimental)')
         .option('--dev', 'run in developer mode (experimental)', false)
-        .action((parsedOptions) => {
+        .action((path, parsedOptions) => {
+            parsedOptions.cwd = path || process.cwd();
             indexAction(parsedOptions as IndexOptions);
         });
 
@@ -126,8 +127,9 @@ export function mainCommand(
 
     command
         .command('detect')
-        .option('--cwd <path>', 'root directory to detect Python projects in', process.cwd())
-        .action((parsedOptions) => {
+        .argument('[path]', 'root directory to detect Python projects in')
+        .action((path, parsedOptions) => {
+            parsedOptions.cwd = path || process.cwd();
             detectAction!(parsedOptions as DetectOptions);
         });
 
