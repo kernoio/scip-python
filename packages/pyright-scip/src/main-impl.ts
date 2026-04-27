@@ -51,7 +51,7 @@ export function applyFilterToOptions(options: IndexOptions, repoRoot: string): v
     const targetRoot = fs.existsSync(targetSrc) ? targetSrc : targetAbs;
     options.targetOnly = targetAbs;
     options.targetSourceRoot = targetRoot;
-    options.extraPaths = [targetRoot, ...siblingAbsPaths];
+    options.extraPaths = [targetRoot, ...siblingAbsPaths, ...(options.extraPaths ?? [])];
 }
 
 function runSingleThreaded(options: IndexOptions, outputFile: string): void {

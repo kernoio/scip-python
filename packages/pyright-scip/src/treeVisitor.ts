@@ -33,7 +33,7 @@ import { Position } from './lsif-typescript/Position';
 import { Range } from './lsif-typescript/Range';
 import { ScipConfig } from './lib';
 import * as ParseTreeUtils from 'pyright-internal/analyzer/parseTreeUtils';
-import { ClassType, Type, TypeCategory } from 'pyright-internal/analyzer/types';
+import { ClassType, ModuleType, Type, TypeCategory } from 'pyright-internal/analyzer/types';
 import * as Types from 'pyright-internal/analyzer/types';
 import { TypeStubExtendedWriter } from './TypeStubExtendedWriter';
 import { SourceFile } from 'pyright-internal/analyzer/sourceFile';
@@ -806,13 +806,62 @@ export class TreeVisitor extends ParseTreeWalker {
             // In the future, it could be possible that we could store what locals we have generated for a file
             // (for example `unknown_module.access`, and then use the same local for all of them, but it would be quite
             // difficult in my mind).
-            case ParseNodeType.MemberAccess:
+            case ParseNodeType.MemberAccess: {
+                const memberParent = parent;
+                if (memberParent.d.member === node) {
+                    const leftType = this.evaluator.getTypeOfExpression(memberParent.d.leftExpr);
+                    const resolved = this.tryResolveExternalMemberAccess(node, leftType.type);
+                    if (resolved) {
+                        return true;
+                    }
+                }
                 return true;
+            }
         }
 
         log.debug('    NO DECL:', ParseTreeUtils.printParseNodeType, parent.nodeType);
         this.pushNewOccurrence(node, this.getLocalForDeclaration(node));
         return true;
+    }
+
+    private tryResolveExternalMemberAccess(node: NameNode, leftType: Type): boolean {
+        if (leftType.category === TypeCategory.Module) {
+            const moduleType = leftType as ModuleType;
+            const moduleName = moduleType.priv?.moduleName;
+            if (moduleName && !this.isProjectModule(moduleName)) {
+                const topLevel = moduleName.split('.')[0];
+                const pkg = new PythonPackage(topLevel, '', []);
+                const symbol = Symbols.makeTerm(
+                    Symbols.makeModuleInit(pkg, moduleName),
+                    node.d.value
+                );
+                this.emitSymbolInformationOnce(node, symbol);
+                this.pushNewOccurrence(node, symbol);
+                return true;
+            }
+        }
+
+        if (leftType.category === TypeCategory.Class) {
+            const classType = leftType as ClassType;
+            const moduleName = classType.shared?.moduleName;
+            const className = classType.shared?.name;
+            if (moduleName && className && !this.isProjectModule(moduleName)) {
+                const topLevel = moduleName.split('.')[0];
+                const pkg = new PythonPackage(topLevel, '', []);
+                const symbol = Symbols.makeTerm(
+                    Symbols.makeType(
+                        Symbols.makeModule(pkg, moduleName),
+                        className
+                    ),
+                    node.d.value
+                );
+                this.emitSymbolInformationOnce(node, symbol);
+                this.pushNewOccurrence(node, symbol);
+                return true;
+            }
+        }
+
+        return false;
     }
 
     override visitName(node: NameNode): boolean {
@@ -900,10 +949,8 @@ export class TreeVisitor extends ParseTreeWalker {
                 }
                 pythonPackage = this.projectPackage;
             } else {
-                const newSymbol = ScipSymbol.local(this.counter.next());
-                this.rawSetLsifSymbol(node, newSymbol, true);
-                this.emitSymbolInformationOnce(node, newSymbol);
-                return newSymbol;
+                const topLevel = moduleName.split('.')[0];
+                pythonPackage = new PythonPackage(topLevel, '', []);
             }
         }
 
@@ -954,9 +1001,6 @@ export class TreeVisitor extends ParseTreeWalker {
     }
 
     private safeClass(pythonPackage: PythonPackage, moduleName: string, name: string): ScipSymbol {
-        if (!this.isProjectModule(moduleName)) {
-            return ScipSymbol.local(this.counter.next());
-        }
         return Symbols.makeClass(pythonPackage, moduleName, name);
     }
 
@@ -1030,7 +1074,6 @@ export class TreeVisitor extends ParseTreeWalker {
                             case TypeCategory.TypeVar: {
                                 const typeVar = type.type;
                                 const bound = typeVar.shared.boundType! as ClassType;
-
                                 return this.getSymbolOnce(node, () => {
                                     const pythonPackage = this.getPackageInfo(node, bound.shared.moduleName)!;
                                     let symbol = Symbols.makeTerm(
@@ -1045,6 +1088,44 @@ export class TreeVisitor extends ParseTreeWalker {
                                     this.emitSymbolInformationOnce(node, symbol);
                                     return symbol;
                                 });
+                            }
+                            case TypeCategory.Class: {
+                                const classType = type.type as ClassType;
+                                const moduleName = classType.shared?.moduleName;
+                                const className = classType.shared?.name;
+                                if (moduleName && className && !this.isProjectModule(moduleName)) {
+                                    const topLevel = moduleName.split('.')[0];
+                                    const pkg = new PythonPackage(topLevel, '', []);
+                                    return this.getSymbolOnce(node, () => {
+                                        const symbol = Symbols.makeTerm(
+                                            Symbols.makeType(
+                                                Symbols.makeModule(pkg, moduleName),
+                                                className
+                                            ),
+                                            node.d.value
+                                        );
+                                        this.emitSymbolInformationOnce(node, symbol);
+                                        return symbol;
+                                    });
+                                }
+                                break;
+                            }
+                            case TypeCategory.Module: {
+                                const moduleType = type.type as ModuleType;
+                                const moduleName = moduleType.priv?.moduleName;
+                                if (moduleName && !this.isProjectModule(moduleName)) {
+                                    const topLevel = moduleName.split('.')[0];
+                                    const pkg = new PythonPackage(topLevel, '', []);
+                                    return this.getSymbolOnce(node, () => {
+                                        const symbol = Symbols.makeTerm(
+                                            Symbols.makeModuleInit(pkg, moduleName),
+                                            node.d.value
+                                        );
+                                        this.emitSymbolInformationOnce(node, symbol);
+                                        return symbol;
+                                    });
+                                }
+                                break;
                             }
                             default:
                         }
