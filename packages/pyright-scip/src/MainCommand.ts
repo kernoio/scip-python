@@ -88,8 +88,14 @@ export function mainCommand(
         )
         .option('--environment <json-file>', 'the environment json file (experimental)')
         .option('--dev', 'run in developer mode (experimental)', false)
+        .option('--extra-types-path <paths...>', 'additional paths to include when resolving types')
         .action((path, parsedOptions) => {
             parsedOptions.cwd = path || process.cwd();
+            if (parsedOptions.extraTypesPath) {
+                parsedOptions.extraPaths = Array.isArray(parsedOptions.extraTypesPath)
+                    ? parsedOptions.extraTypesPath
+                    : [parsedOptions.extraTypesPath];
+            }
             indexAction(parsedOptions as IndexOptions);
         });
 

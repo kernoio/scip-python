@@ -1500,11 +1500,14 @@ export class TreeVisitor extends ParseTreeWalker {
         decl: Declaration | undefined = undefined
     ): PythonPackage | undefined {
         if (decl && decl.uri) {
-            const p = path.resolve(decl.uri.getFilePath());
-            if (p.startsWith(this.config.scipConfig.projectRoot)) {
-                return this.projectPackage;
+            const filePath = decl.uri.getFilePath();
+            if (filePath && path.isAbsolute(filePath)) {
+                const p = path.resolve(filePath);
+                if (p.startsWith(this.config.scipConfig.projectRoot)) {
+                    return this.projectPackage;
+                }
+                return undefined;
             }
-            return undefined;
         }
 
         if (node.d.leadingDots > 0) {

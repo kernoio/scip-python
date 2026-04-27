@@ -21,7 +21,8 @@ export interface FlatProjectNode {
     buildFiles: string[];
     dependencies: string[];
     config: ProjectConfig;
-    imports?: Record<string, Record<string, Record<string, number>>>;
+    packageImports?: Record<string, Record<string, Record<string, number>>>;
+    moduleImports?: Record<string, Record<string, Record<string, number>>>;
 }
 
 export interface Workspace {
@@ -245,7 +246,7 @@ function parsePyprojectToml(tomlPath: string): ParsedProject | undefined {
     return {
         absDir: projectDir,
         configFile: 'pyproject.toml',
-        name: name.toLowerCase().replace(/_/g, '-'),
+        name: name.toLowerCase().replace(/[_.-]+/g, '-'),
         buildTool,
         buildFiles,
         rawDependencies,
@@ -304,7 +305,7 @@ function parseSetupFiles(markers: string[], existingDirs: Set<string>): ParsedPr
         results.push({
             absDir: dir,
             configFile,
-            name: name.toLowerCase().replace(/_/g, '-'),
+            name: name.toLowerCase().replace(/[_.-]+/g, '-'),
             buildTool: 'setuptools',
             buildFiles: setupBuildFiles,
             rawDependencies: [],
@@ -327,7 +328,7 @@ function parseRequirementsTxt(markers: string[], existingDirs: Set<string>): Par
         results.push({
             absDir: dir,
             configFile: 'requirements.txt',
-            name: path.basename(dir).toLowerCase().replace(/_/g, '-'),
+            name: path.basename(dir).toLowerCase().replace(/[_.-]+/g, '-'),
             buildTool: 'pip',
             buildFiles: ['requirements.txt'],
             rawDependencies: [],
@@ -351,7 +352,7 @@ function parsePipfile(markers: string[], existingDirs: Set<string>): ParsedProje
         results.push({
             absDir: dir,
             configFile: 'Pipfile',
-            name: path.basename(dir).toLowerCase().replace(/_/g, '-'),
+            name: path.basename(dir).toLowerCase().replace(/[_.-]+/g, '-'),
             buildTool: 'pipenv',
             buildFiles,
             rawDependencies: [],
@@ -776,26 +777,38 @@ function collectProjectImportModules(
     return imports;
 }
 
-function filterImportsForProject(
+interface SplitImports {
+    packageImports: Record<string, Record<string, Record<string, number>>>;
+    moduleImports: Record<string, Record<string, Record<string, number>>>;
+}
+
+function splitImportsForProject(
     projectPath: string,
     repoImportMap: Record<string, Record<string, Record<string, number>>>,
     internalNames: Set<string>,
-): Record<string, Record<string, Record<string, number>>> {
-    const result: Record<string, Record<string, Record<string, number>>> = {};
+): SplitImports {
+    const packageImports: Record<string, Record<string, Record<string, number>>> = {};
+    const moduleImports: Record<string, Record<string, Record<string, number>>> = {};
     for (const [repoRelDir, modSpecifiers] of Object.entries(repoImportMap)) {
         if (!dirBelongsToProject(repoRelDir, projectPath)) continue;
         const projectRelDir = toProjectRelativeDir(repoRelDir, projectPath);
-        const filtered: Record<string, Record<string, number>> = {};
+        const pkgFiltered: Record<string, Record<string, number>> = {};
+        const modFiltered: Record<string, Record<string, number>> = {};
         for (const [mod, specifiers] of Object.entries(modSpecifiers)) {
-            if (!internalNames.has(mod)) {
-                filtered[mod] = specifiers;
+            if (internalNames.has(mod)) {
+                modFiltered[mod] = specifiers;
+            } else {
+                pkgFiltered[mod] = specifiers;
             }
         }
-        if (Object.keys(filtered).length > 0) {
-            result[projectRelDir] = filtered;
+        if (Object.keys(pkgFiltered).length > 0) {
+            packageImports[projectRelDir] = pkgFiltered;
+        }
+        if (Object.keys(modFiltered).length > 0) {
+            moduleImports[projectRelDir] = modFiltered;
         }
     }
-    return result;
+    return { packageImports, moduleImports };
 }
 
 function discoverUndeclaredSiblingDeps(
@@ -924,7 +937,13 @@ export function detect(cwd: string): DetectOutput {
     const internalNames = findInternalImportableNames(repoRoot);
     for (const workspace of workspaces) {
         for (const project of workspace.projects) {
-            project.imports = filterImportsForProject(project.path, repoImportMap, internalNames);
+            const { packageImports, moduleImports } = splitImportsForProject(project.path, repoImportMap, internalNames);
+            if (Object.keys(packageImports).length > 0) {
+                project.packageImports = packageImports;
+            }
+            if (Object.keys(moduleImports).length > 0) {
+                project.moduleImports = moduleImports;
+            }
         }
     }
 

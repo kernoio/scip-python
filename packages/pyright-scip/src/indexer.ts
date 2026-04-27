@@ -115,6 +115,10 @@ export class Indexer {
             }
         }
 
+        if (!scipConfig.projectName) {
+            scipConfig.projectName = path.basename(scipConfig.projectRoot);
+        }
+
         const matcher = new FileMatcher(this.pyrightConfig, fs);
         this.projectFiles = new Set(matcher.matchFiles(this.pyrightConfig.include, this.pyrightConfig.exclude));
         if (scipConfig.targetOnly) {
