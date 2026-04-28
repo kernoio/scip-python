@@ -1075,16 +1075,19 @@ export class TreeVisitor extends ParseTreeWalker {
                                 const typeVar = type.type;
                                 const bound = typeVar.shared.boundType! as ClassType;
                                 return this.getSymbolOnce(node, () => {
-                                    const pythonPackage = this.getPackageInfo(node, bound.shared.moduleName)!;
+                                    const moduleName = bound.shared.moduleName;
+                                    const className = bound.shared.name;
+                                    const pythonPackage = this.isProjectFile(node)
+                                        ? this.projectPackage
+                                        : new PythonPackage(moduleName.split('.')[0], '', []);
                                     let symbol = Symbols.makeTerm(
                                         Symbols.makeType(
-                                            this.safeModule(pythonPackage, bound.shared.moduleName),
-                                            bound.shared.name
+                                            this.safeModule(pythonPackage, moduleName),
+                                            className
                                         ),
                                         node.d.value
                                     );
 
-                                    // TODO: We might not want to do this if it's not the definition?
                                     this.emitSymbolInformationOnce(node, symbol);
                                     return symbol;
                                 });
