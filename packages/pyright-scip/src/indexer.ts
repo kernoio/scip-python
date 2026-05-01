@@ -17,6 +17,7 @@ import { ScipConfig } from './lib';
 import { SourceFile } from 'pyright-internal/analyzer/sourceFile';
 import { getFileInfo } from 'pyright-internal/analyzer/analyzerNodeInfo';
 import { Counter } from './lsif-typescript/Counter';
+import { refineViewSetTypes } from './viewsetTypeRefinement';
 import { PyrightFileSystem } from 'pyright-internal/pyrightFileSystem';
 import { version } from 'package.json';
 import { FileMatcher } from './FileMatcher';
@@ -287,6 +288,8 @@ export class Indexer {
                 for (const sym of doc.symbols) {
                     sym.documentation = [];
                 }
+
+                refineViewSetTypes(doc);
 
                 batch.push(doc);
                 if (batch.length >= BATCH_SIZE) {

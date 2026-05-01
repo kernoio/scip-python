@@ -1750,7 +1750,13 @@ export function lookUpClassMember(
 
     const memberItr = getClassMemberIterator(classType, memberName, flags, skipMroClass);
 
-    return memberItr.next()?.value;
+    for (const member of memberItr) {
+        if (!isAnyOrUnknown(member.classType)) {
+            return member;
+        }
+    }
+
+    return undefined;
 }
 
 // Iterates members in a class matching memberName using the multiple-inheritance rules.
