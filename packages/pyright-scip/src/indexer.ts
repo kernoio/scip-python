@@ -92,10 +92,18 @@ export class Indexer {
         let config = new ScipPyrightConfig(scipConfig, fs, tempFile);
         this.pyrightConfig = config.getConfigOptions();
 
-        if (scipConfig.extraPaths && scipConfig.extraPaths.length > 0) {
-            const existing = this.pyrightConfig.defaultExtraPaths ?? [];
-            this.pyrightConfig.defaultExtraPaths = [...existing, ...scipConfig.extraPaths.map((p) => UriEx.file(p))];
+        const existing = this.pyrightConfig.defaultExtraPaths ?? [];
+        const userExtraPaths = scipConfig.extraPaths?.map((p) => UriEx.file(p)) ?? [];
+
+        const typeshedStubPaths: typeof existing = [];
+        const typeshedStubs = this.pyrightConfig.typeshedPath?.combinePaths('stubs');
+        if (typeshedStubs && fs.existsSync(typeshedStubs)) {
+            for (const entry of fs.readdirEntriesSync(typeshedStubs)) {
+                typeshedStubPaths.push(typeshedStubs.combinePaths(entry.name));
+            }
         }
+
+        this.pyrightConfig.defaultExtraPaths = [...typeshedStubPaths, ...existing, ...userExtraPaths];
 
         if (!scipConfig.projectName || !scipConfig.projectVersion) {
             const { name, version } = Indexer.inferProjectInfo(
@@ -123,7 +131,6 @@ export class Indexer {
         const matcher = new FileMatcher(this.pyrightConfig, fs);
         this.projectFiles = new Set(matcher.matchFiles(this.pyrightConfig.include, this.pyrightConfig.exclude));
         if (scipConfig.targetOnly) {
-            this.pyrightConfig.workspaceOnlyImports = true;
             scipConfig.targetOnly = path.resolve(scipConfig.targetOnly);
             const targetFiles: Set<string> = new Set();
             for (const file of this.projectFiles) {

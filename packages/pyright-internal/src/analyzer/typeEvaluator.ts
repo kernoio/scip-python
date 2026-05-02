@@ -4322,6 +4322,7 @@ export function createTypeEvaluator(
             let expandedType = isUnion(unexpandedType) ? unexpandedType : makeTopLevelTypeVarsConcrete(unexpandedType);
 
             expandedType = transformPossibleRecursiveTypeAlias(expandedType);
+
             if (options?.expandCallback) {
                 expandedType = options.expandCallback(expandedType);
             }
@@ -4801,8 +4802,6 @@ export function createTypeEvaluator(
         let isIncomplete = false;
         const allowForwardReferences = (flags & EvalFlags.ForwardRefs) !== 0 || fileInfo.isStubFile;
 
-        // Look for the scope that contains the value definition and
-        // see if it has a declared type.
         let symbolWithScope = lookUpSymbolRecursive(
             node,
             name,
@@ -4828,8 +4827,6 @@ export function createTypeEvaluator(
         if (symbolWithScope) {
             let useCodeFlowAnalysis = !allowForwardReferences;
 
-            // If the symbol is implicitly imported from the builtin
-            // scope, there's no need to use code flow analysis.
             if (symbolWithScope.scope.type === ScopeType.Builtin) {
                 useCodeFlowAnalysis = false;
             }
@@ -4837,8 +4834,6 @@ export function createTypeEvaluator(
             symbol = symbolWithScope.symbol;
             setSymbolAccessed(fileInfo, symbol, node);
 
-            // If we're not supposed to be analyzing this function, skip the remaining work
-            // to determine the name's type. Simply evaluate its type as Any.
             if (!fileInfo.diagnosticRuleSet.analyzeUnannotatedFunctions) {
                 const containingFunction = ParseTreeUtils.getEnclosingFunction(node);
                 if (containingFunction && ParseTreeUtils.isUnannotatedFunction(containingFunction)) {
@@ -4849,9 +4844,6 @@ export function createTypeEvaluator(
                 }
             }
 
-            // Get the effective type (either the declared type or the inferred type).
-            // If we're using code flow analysis, pass the usage node so we consider
-            // only the assignment nodes that are reachable from this usage.
             const effectiveTypeInfo = getEffectiveTypeOfSymbolForUsage(symbol, useCodeFlowAnalysis ? node : undefined);
             let effectiveType = transformPossibleRecursiveTypeAlias(effectiveTypeInfo.type);
 
@@ -4940,7 +4932,6 @@ export function createTypeEvaluator(
             // Add TypeForm details if appropriate.
             type = addTypeFormForSymbol(node, type, flags, !!effectiveTypeInfo.includesVariableDecl);
         } else {
-            // Handle the special case of "reveal_type" and "reveal_locals".
             if (name === 'reveal_type' || name === 'reveal_locals') {
                 type = AnyType.create();
             } else {
@@ -19417,17 +19408,16 @@ export function createTypeEvaluator(
                 if (memberDecls.length === 1 && memberDecls[0].type === DeclarationType.Function) {
                     const baseClassMethodNode = memberDecls[0].node;
 
-                    // Does the signature match exactly with the exception of annotations?
-                    if (
-                        baseClassMethodNode.d.params.length === functionNode.d.params.length &&
+                    const paramsMatch = baseClassMethodNode.d.params.length === functionNode.d.params.length &&
                         baseClassMethodNode.d.params.every((param, index) => {
                             const overrideParam = functionNode.d.params[index];
                             return (
                                 overrideParam.d.name?.d.value === param.d.name?.d.value &&
                                 overrideParam.d.category === param.d.category
                             );
-                        })
-                    ) {
+                        });
+
+                    if (paramsMatch) {
                         const baseClassParam = baseClassMethodNode.d.params[paramIndex];
                         const baseClassParamAnnotation =
                             baseClassParam.d.annotation ?? baseClassParam.d.annotationComment;
@@ -19437,21 +19427,24 @@ export function createTypeEvaluator(
                                 functionNode.d.params[paramIndex].d.category
                             );
 
-                            // If the parameter type is generic, specialize it in the context
-                            // of the child class.
+                            const originalParamType = inferredParamType;
+
                             if (requiresSpecialization(inferredParamType) && isClass(baseClassMemberInfo.classType)) {
                                 const scopeIds: TypeVarScopeId[] = getTypeVarScopeIds(baseClassMemberInfo.classType);
                                 const solution = buildSolutionFromSpecializedClass(baseClassMemberInfo.classType);
 
                                 scopeIds.push(ParseTreeUtils.getScopeIdForNode(baseClassMethodNode));
 
-                                // Replace any unsolved TypeVars with Unknown (including all function-scoped TypeVars).
                                 inferredParamType = applySolvedTypeVars(inferredParamType, solution, {
                                     replaceUnsolved: {
                                         scopeIds,
                                         tupleClassType: getTupleClassType(),
                                     },
                                 });
+                            }
+
+                            if (isUnknown(inferredParamType) && isTypeVar(originalParamType) && originalParamType.shared.boundType) {
+                                inferredParamType = originalParamType.shared.boundType;
                             }
 
                             const fileInfo = AnalyzerNodeInfo.getFileInfo(functionNode);
