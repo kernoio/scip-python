@@ -912,6 +912,11 @@ export class ParseTreeWalker extends ParseTreeVisitor<boolean> {
     }
 
     walk(node: ParseNode): void {
+        // NOTE(scip-python): Parser recovery and some visitors can yield undefined child slots;
+        // skipping avoids crashing the whole index on traverse.
+        if (!node) {
+            return;
+        }
         const childrenToWalk = this.visitNode(node);
         if (childrenToWalk.length > 0) {
             this.walkMultiple(childrenToWalk);
@@ -930,6 +935,10 @@ export class ParseTreeWalker extends ParseTreeVisitor<boolean> {
     // If the method returns false, we assume that the handler has already handled the
     // child nodes, so an empty list is returned.
     visitNode(node: ParseNode): ParseNodeArray {
+        // NOTE(scip-python): Defensive: visit() and getChildNodes() assume a real node.
+        if (!node) {
+            return [];
+        }
         return this.visit(node) ? getChildNodes(node) : [];
     }
 }

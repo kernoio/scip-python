@@ -411,7 +411,10 @@ export class ScipPyrightConfig {
                 throw e;
             }
 
-            this._console.error(`Pyproject file "${pyprojectPath.toUserVisibleString()}" is missing "[tool.pyright]" section.`);
+            this._console.warn(
+                `Pyproject file "${pyprojectPath.toUserVisibleString()}" has no "[tool.scip]" or "[tool.pyright]" section; ` +
+                    `continuing with defaults and CLI options.`
+            );
             return undefined;
         });
     }

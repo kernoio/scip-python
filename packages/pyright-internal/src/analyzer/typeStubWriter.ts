@@ -106,6 +106,10 @@ class ImportSymbolWalker extends ParseTreeWalker {
     }
 
     override walk(node: ParseNode) {
+        // NOTE(scip-python): isCodeUnreachable(undefined) is false, so guard before super.walk.
+        if (!node) {
+            return;
+        }
         if (!AnalyzerNodeInfo.isCodeUnreachable(node)) {
             super.walk(node);
         }
@@ -189,6 +193,10 @@ export class TypeStubWriter extends ParseTreeWalker {
     }
 
     override walk(node: ParseNode) {
+        // NOTE(scip-python): isCodeUnreachable(undefined) is false, so guard before super.walk.
+        if (!node) {
+            return;
+        }
         if (!AnalyzerNodeInfo.isCodeUnreachable(node)) {
             super.walk(node);
         }
