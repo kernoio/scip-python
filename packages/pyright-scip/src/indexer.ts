@@ -265,7 +265,13 @@ export class Indexer {
                 });
 
                 const parseResults = sourceFile.getParseResults();
-                const tree = parseResults?.parserOutput.parseTree!;
+                const tree = parseResults?.parserOutput?.parseTree;
+                if (!tree) {
+                    console.warn(
+                        `[scip-python] index: skipped file emit (no parse tree) path=${JSON.stringify(filepath)}`
+                    );
+                    return;
+                }
 
                 let visitor = new TreeVisitor({
                     document: doc,
@@ -282,10 +288,17 @@ export class Indexer {
                 try {
                     visitor.walk(tree);
                 } catch (e) {
-                    throw {
-                        currentFilepath: sourceFile.getUri().getFilePath(),
-                        error: e,
-                    };
+                    if (this.scipConfig.dev) {
+                        throw {
+                            currentFilepath: sourceFile.getUri().getFilePath(),
+                            error: e,
+                        };
+                    }
+                    const detail = e instanceof Error ? e.message : JSON.stringify(e);
+                    console.warn(
+                        `[scip-python] index: skipped file emit path=${JSON.stringify(filepath)} reason=${JSON.stringify(detail)}`
+                    );
+                    return;
                 }
 
                 if (doc.occurrences.length === 0) {
