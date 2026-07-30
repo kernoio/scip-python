@@ -25,13 +25,30 @@ import { sendStatus, StatusUpdater, withStatus } from './status';
 import { scip } from './scip';
 import { ScipPyrightConfig } from './config';
 import { setProjectNamespace } from './symbols';
+import { partitionFiles } from './sharding';
 
 export class Indexer {
     program: Program;
     importResolver: ImportResolver;
     counter: Counter;
     pyrightConfig: ConfigOptions;
+    // The FULL discovered project file set (drives projectModulePrefixes / symbol scheme; identical in
+    // every shard). Never narrowed by sharding — see the constructor for why.
     projectFiles: Set<string>;
+    // The slice this process tracks and emits (BE-2766). Equal to projectFiles in the single-process
+    // path; a strict subset in a shard child.
+    shardFiles!: Set<string>;
+
+    // Total discovered files before the shard partition (BE-2766). Equal to projectFiles.size in the
+    // single-process path; in a shard child it is the full set every shard agrees on, used by the
+    // orchestrator's cross-shard loud-partial guard.
+    totalProjectFiles: number = 0;
+    // Emit accounting for the loud-partial guard: files whose document was written, files that produced
+    // no occurrences (legitimately not emitted), and files skipped on the failure path (no parse tree or
+    // a walk error).
+    emittedDocuments: number = 0;
+    emptyDocuments: number = 0;
+    skippedFiles: number = 0;
 
     public static inferProjectInfo(
         inferProjectVersionFromCommit: boolean,
@@ -143,11 +160,32 @@ export class Indexer {
 
         sendStatus(`Total Project Files ${this.projectFiles.size}`);
 
+        // Sharded parallel indexing (BE-2766): when this process is a shard child, it tracks and emits
+        // only its slice of the discovered set (`shardFiles`), but `projectFiles` stays the FULL
+        // discovered set. This split matters for correctness: `projectModulePrefixes` (index(), which
+        // decides whether a module gets the project-local or the external symbol scheme) MUST be derived
+        // from the whole project, not one shard's slice — otherwise a shard whose slice omits a sibling
+        // top-level package would misclassify cross-package references into it. Only `setTrackedFiles`
+        // and the emit loop are restricted to the slice; other shards' files that this shard references
+        // are analyzed on-demand by the import resolver, so cross-shard symbols stay global. Every shard
+        // runs the identical deterministic discovery + partition, so the slices are disjoint and cover
+        // the full set. The full total is retained for the cross-shard loud-partial guard.
+        this.totalProjectFiles = this.projectFiles.size;
+        const shardCount = scipConfig.shardCount ?? 1;
+        const shardIndex = scipConfig.shardIndex ?? 0;
+        if (shardCount > 1) {
+            const shards = partitionFiles([...this.projectFiles], shardCount, (f) => path.dirname(f));
+            this.shardFiles = new Set(shards[shardIndex] ?? []);
+            sendStatus(`Shard ${shardIndex + 1}/${shardCount}: indexing ${this.shardFiles.size} files`);
+        } else {
+            this.shardFiles = this.projectFiles;
+        }
+
         const host = new FullAccessHost(serviceProvider);
         this.importResolver = new ImportResolver(serviceProvider, this.pyrightConfig, host);
 
         this.program = new Program(this.importResolver, this.pyrightConfig, serviceProvider, undefined, true);
-        this.program.setTrackedFiles([...this.projectFiles].map((p) => UriEx.file(p)));
+        this.program.setTrackedFiles([...this.shardFiles].map((p) => UriEx.file(p)));
 
         if (scipConfig.projectNamespace) {
             setProjectNamespace(scipConfig.projectName, this.scipConfig.projectNamespace!);
@@ -224,7 +262,8 @@ export class Indexer {
         let projectSourceFiles: SourceFile[] = [];
 
         withStatus('Collect project source files', () => {
-            for (const filepath of this.projectFiles) {
+            // Emit only this shard's slice (== the full set in the single-process path).
+            for (const filepath of this.shardFiles) {
                 const sourceFile = this.program.getSourceFile(UriEx.file(filepath));
                 if (!sourceFile) {
                     continue;
@@ -300,6 +339,7 @@ export class Indexer {
                 }
                 const tree = parseResults?.parserOutput?.parseTree;
                 if (!tree) {
+                    this.skippedFiles++;
                     console.warn(
                         `[scip-python] index: skipped file emit (no parse tree) path=${JSON.stringify(filepath)}`
                     );
@@ -332,6 +372,7 @@ export class Indexer {
                         };
                     }
                     const detail = e instanceof Error ? e.message : JSON.stringify(e);
+                    this.skippedFiles++;
                     console.warn(
                         `[scip-python] index: skipped file emit path=${JSON.stringify(filepath)} reason=${JSON.stringify(detail)}`
                     );
@@ -348,6 +389,7 @@ export class Indexer {
                 }
 
                 if (doc.occurrences.length === 0) {
+                    this.emptyDocuments++;
                     return;
                 }
 
@@ -357,6 +399,7 @@ export class Indexer {
 
                 refineViewSetTypes(doc);
 
+                this.emittedDocuments++;
                 batch.push(doc);
                 if (batch.length >= BATCH_SIZE) {
                     flushBatch();

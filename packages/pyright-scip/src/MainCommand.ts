@@ -14,6 +14,14 @@ export interface IndexOptions {
     extraPaths?: string[];
     infer?: { projectVersionFromCommit: boolean };
 
+    // Sharded parallel indexing (BE-2766). `shards` is the orchestrator directive (spawn k shard
+    // processes); `shardIndex`/`shardCount` are set by the orchestrator on each child so it indexes only
+    // its slice of the discovered file set. A child (shardCount > 1) never itself re-shards.
+    shards?: number;
+    shardIndex?: number;
+    shardCount?: number;
+    shardResultPath?: string;
+
     siblingPackages?: Array<{ name: string; srcPath: string }>;
     workspaceRoot?: string;
     targetSourceRoot?: string;
@@ -47,6 +55,17 @@ const parseOptionalNum = (value: string) => {
     const parsedValue = parseFloat(value);
     if (isNaN(parsedValue)) {
         throw new InvalidArgumentError('Not a number.');
+    }
+    return parsedValue;
+};
+
+const parseOptionalInt = (value: string) => {
+    if (value === undefined) {
+        return undefined;
+    }
+    const parsedValue = parseInt(value, 10);
+    if (isNaN(parsedValue)) {
+        throw new InvalidArgumentError('Not an integer.');
     }
     return parsedValue;
 };
@@ -89,12 +108,24 @@ export function mainCommand(
         .option('--environment <json-file>', 'the environment json file (experimental)')
         .option('--dev', 'run in developer mode (experimental)', false)
         .option('--extra-types-path <paths...>', 'additional paths to include when resolving types')
+        .option(
+            '--shards <n>',
+            'index in n parallel shard processes and merge the outputs (default 1 = single process). ' +
+                'Also settable via SCIP_SHARDS; SCIP_DISABLE_SHARDING forces single-process.',
+            parseOptionalInt
+        )
+        .option('--shard-index <i>', '[internal] this shard process index (set by the orchestrator)', parseOptionalInt)
+        .option('--shard-count <k>', '[internal] total shard count (set by the orchestrator)', parseOptionalInt)
+        .option('--shard-result <path>', '[internal] path to write this shard result summary json')
         .action((path, parsedOptions) => {
             parsedOptions.cwd = path || process.cwd();
             if (parsedOptions.extraTypesPath) {
                 parsedOptions.extraPaths = Array.isArray(parsedOptions.extraTypesPath)
                     ? parsedOptions.extraTypesPath
                     : [parsedOptions.extraTypesPath];
+            }
+            if (parsedOptions.shardResult) {
+                parsedOptions.shardResultPath = parsedOptions.shardResult;
             }
             indexAction(parsedOptions as IndexOptions);
         });
