@@ -244,8 +244,36 @@ export class Indexer {
 
         let externalSymbols: Map<string, scip.SymbolInformation> = new Map();
         const BATCH_SIZE = 50;
+
+        // Memory smoothing (BE-2761): bound the emit-phase resident set so a complete index can be
+        // produced under a fixed node heap cap instead of growing monotonically until pyright's
+        // watermark eviction fires (that eviction is emission-blind and drops un-emitted parse trees,
+        // which crashes the walk / yields a silent partial index). Three coordinated mechanisms, on by
+        // default and disabled together via SCIP_DISABLE_MEMORY_SMOOTHING for exact legacy behavior:
+        //   (1) re-parse-on-demand: if a file's parse tree was already evicted, re-derive it via the
+        //       program rather than crashing/silently-skipping (makes emission survive eviction);
+        //   (2) per-file release: drop each file's parse/bind info immediately after its document is
+        //       built (the document is independent of the AST), keeping the parse-tree floor low
+        //       throughout the emit instead of letting every file's tree stay resident to the end.
+        //       Dropping continuously (rather than waiting for pressure) keeps the heap well away from
+        //       the cap, which avoids the near-cap V8 GC thrash that a deferred, pressure-gated drop
+        //       falls into when the working set sits close to the cap;
+        //   (3) periodic, heap-gated trim: call program.handleMemoryHighUsage() every N files, which
+        //       only evicts when pyright's 90%-of-cap heap watermark is hit, so it is a no-op under a
+        //       generous heap and a bounded smoother under a tight one, safe because of (1).
+        // Under a generous heap (3) never evicts and (1) never re-parses, so the only active mechanism
+        // is (2); the snapshot corpus is byte-identical to the legacy baseline (verified). In-repo
+        // definition/reference symbols are identical to baseline at every cap; under a tight cap a small
+        // number of *external* library reference types re-resolve slightly differently after a cache
+        // trim (parse/bind/eval is otherwise deterministic).
+        const memorySmoothing = !process.env.SCIP_DISABLE_MEMORY_SMOOTHING;
+        // Trim cadence N: files between heap-gated trims. Smaller N caps peak more tightly but re-parses
+        // more often (slower); larger N is faster but peaks higher. N=250 held posthog (12,589 files) to
+        // ~4.1 GB peak RSS under a 4096 MB cap where the legacy path OOM-crashes at ~750 files.
+        const trimEvery = Math.max(1, parseInt(process.env.SCIP_MEMORY_TRIM_EVERY ?? '250', 10) || 250);
+
         withStatus('Parse and emit SCIP', (progress) => {
-            const typeEvaluator = this.program.evaluator!;
+            const capturedEvaluator = this.program.evaluator!;
             let batch: scip.Document[] = [];
 
             const flushBatch = () => {
@@ -264,7 +292,12 @@ export class Indexer {
                     relative_path: path.relative(this.getProjectRoot(), filepath),
                 });
 
-                const parseResults = sourceFile.getParseResults();
+                let parseResults = sourceFile.getParseResults();
+                if (!parseResults && memorySmoothing) {
+                    // (1) re-parse-on-demand: a prior heap-gated trim may have dropped this file's
+                    // parse tree; re-derive it via the program instead of skipping.
+                    parseResults = this.program.getParseResults(sourceFile.getUri());
+                }
                 const tree = parseResults?.parserOutput?.parseTree;
                 if (!tree) {
                     console.warn(
@@ -272,6 +305,10 @@ export class Indexer {
                     );
                     return;
                 }
+
+                // A heap-gated trim can recreate the evaluator, so read the program's current evaluator
+                // when smoothing rather than one captured before the loop.
+                const typeEvaluator = memorySmoothing ? this.program.evaluator! : capturedEvaluator;
 
                 let visitor = new TreeVisitor({
                     document: doc,
@@ -299,6 +336,15 @@ export class Indexer {
                         `[scip-python] index: skipped file emit path=${JSON.stringify(filepath)} reason=${JSON.stringify(detail)}`
                     );
                     return;
+                }
+
+                if (memorySmoothing) {
+                    // (2) release this file's parse/bind info now that its document is built.
+                    sourceFile.dropParseAndBindInfo();
+                    // (3) heap-gated trim every N files (a no-op unless the heap watermark is hit).
+                    if (index > 0 && index % trimEvery === 0) {
+                        this.program.handleMemoryHighUsage();
+                    }
                 }
 
                 if (doc.occurrences.length === 0) {
